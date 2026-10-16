@@ -663,3 +663,44 @@ export function parseMailboxRecord<K extends MailboxRecordKind>(kind: K, value: 
       return parseContainerRecord(value) as MailboxRecordByKind[K];
   }
 }
+
+/** Source message for processing reactions. Separate from the reply thread. */
+export interface FeedbackTarget {
+  platformId: string;
+  messageId: string;
+}
+
+export interface AgentProgress {
+  phase: 'received' | 'tool' | 'completed' | 'failed' | 'cancelled';
+  targets: FeedbackTarget[];
+  tool?: { name: string; preview: string };
+}
+
+/** Validate container-to-host progress once at the delivery boundary. */
+export function parseAgentProgress(value: unknown): AgentProgress {
+  const progress = value as AgentProgress | null;
+  if (
+    !progress ||
+    !['received', 'tool', 'completed', 'failed', 'cancelled'].includes(progress.phase) ||
+    !Array.isArray(progress.targets) ||
+    progress.targets.some(
+      (target) =>
+        !target ||
+        typeof target.platformId !== 'string' ||
+        typeof target.messageId !== 'string' ||
+        !/^discord:(?:@me|[0-9]+):[0-9]+$/.test(target.platformId) ||
+        !/^[0-9]{17,20}$/.test(target.messageId),
+    )
+  )
+    throw new Error('Invalid agent progress');
+  if (
+    progress.phase === 'tool' &&
+    (!progress.tool ||
+      typeof progress.tool.name !== 'string' ||
+      progress.tool.name.length > 100 ||
+      typeof progress.tool.preview !== 'string' ||
+      progress.tool.preview.length > 240)
+  )
+    throw new Error('Invalid tool progress');
+  return progress;
+}

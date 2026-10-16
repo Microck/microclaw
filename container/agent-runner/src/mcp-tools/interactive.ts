@@ -219,6 +219,15 @@ export const askUserQuestion: McpToolDefinition = {
         // Mark the response as completed via processing_ack (outbound.db)
         markCompleted([response.id]);
 
+        if (r.channel_type === 'discord' && r.thread_id?.startsWith('discord:'))
+          await writeMessageOut({
+            id: generateId(),
+            kind: 'agent_progress',
+            platform_id: r.platform_id,
+            channel_type: r.channel_type,
+            thread_id: r.thread_id,
+            content: JSON.stringify({ phase: 'received', targets: [] }),
+          });
         log(`ask_user_question response: ${questionId} → ${parsed.selectedOption}`);
         return ok(parsed.selectedOption);
       }

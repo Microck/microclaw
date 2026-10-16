@@ -1,3 +1,4 @@
+import { AGENT_DIR } from '../runtime-paths.js';
 /**
  * Claude-owned transcript history: the pre-compact archive, continuation
  * rotation, and the newest-trace lookup. All of it reads the Claude Agent
@@ -105,7 +106,7 @@ export function archiveClaudeTranscript(input: ClaudeArchiveInput, fx: ClaudeHis
     );
     if (!plan) return false;
 
-    const conversationsDir = process.env.NANOCLAW_CONVERSATIONS_DIR || '/workspace/agent/conversations';
+    const conversationsDir = process.env.NANOCLAW_CONVERSATIONS_DIR || `${AGENT_DIR}/conversations`;
     const target = resolveContainedPath(conversationsDir, plan.relativePath, 'Archive planner returned unsafe path');
     fs.mkdirSync(conversationsDir, { recursive: true });
     writeArchivePlan(target, plan);

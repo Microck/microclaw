@@ -98,6 +98,11 @@ export class MissingChannelAdapterError extends Error {
  */
 export function createChannelDeliveryAdapter(): ChannelDeliveryAdapter {
   return {
+    async finalizeDelivery(deliveryId: string) {
+      // Receipt IDs are global mailbox IDs; cleanup has no network side effect.
+      // Include named instances without guessing which reply override was used.
+      await Promise.all([...activeAdapters.values()].map(async (adapter) => adapter.finalizeDelivery?.(deliveryId)));
+    },
     async deliver(
       channelType: string,
       platformId: string,
@@ -106,12 +111,20 @@ export function createChannelDeliveryAdapter(): ChannelDeliveryAdapter {
       content: string,
       files?: OutboundFile[],
       instance?: string,
+      senderName?: string,
+      deliveryId?: string,
     ): Promise<string | undefined> {
       const adapter = getChannelAdapterExact(instance ?? channelType);
       if (!adapter) {
         throw new MissingChannelAdapterError(channelType, instance);
       }
-      return adapter.deliver(platformId, threadId, { kind, content: JSON.parse(content), files });
+      return adapter.deliver(platformId, threadId, {
+        kind,
+        content: JSON.parse(content),
+        files,
+        senderName,
+        deliveryId,
+      });
     },
     async setTyping(
       channelType: string,

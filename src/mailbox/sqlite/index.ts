@@ -37,6 +37,7 @@ import {
   parseProcessingAckRecord,
   parseSessionRoutingRecord,
   parseTaskRecord,
+  parseAgentProgress,
 } from '../model.js';
 import {
   cancelAllTasks,
@@ -74,10 +75,10 @@ function sqliteTimestamp(value: string): string {
 function applyProcessingAcks(db: Database.Database, acks: ProcessingAck[]): void {
   if (acks.length === 0) return;
   const complete = db.prepare(
-    "UPDATE messages_in SET status = 'completed' WHERE id = ? AND status NOT IN ('completed', 'failed')",
+    "UPDATE messages_in SET status = 'completed' WHERE id = ? AND status NOT IN ('completed', 'failed', 'cancelled')",
   );
   const fail = db.prepare(
-    "UPDATE messages_in SET status = 'failed' WHERE id = ? AND status NOT IN ('completed', 'failed')",
+    "UPDATE messages_in SET status = 'failed' WHERE id = ? AND status NOT IN ('completed', 'failed', 'cancelled')",
   );
   db.transaction(() => {
     for (const ack of acks) (ack.status === 'script-skip:error' ? fail : complete).run(ack.messageId);
@@ -174,6 +175,23 @@ function getTaskStats(db: Database.Database, seriesId: string): TaskStats {
 
 export function wrapSqliteInbound(db: Database.Database, nextSequence = () => nextEvenAcross(db)): InboundMailbox {
   return {
+    getQueuedInputs: () =>
+      db
+        .prepare(
+          "SELECT id, json_extract(content, '$.text') AS text FROM messages_in WHERE status='pending' AND json_valid(content) AND json_extract(content, '$.delivery')='queue' ORDER BY seq",
+        )
+        .all() as Array<{ id: string; text: string }>,
+    updateQueuedInput: (id, text) => {
+      const statement =
+        text === null
+          ? db.prepare(
+              "UPDATE messages_in SET status='cancelled' WHERE id=? AND status='pending' AND json_valid(content) AND json_extract(content, '$.delivery')='queue'",
+            )
+          : db.prepare(
+              "UPDATE messages_in SET content=json_set(content, '$.text', ?) WHERE id=? AND status='pending' AND json_valid(content) AND json_extract(content, '$.delivery')='queue'",
+            );
+      return (text === null ? statement.run(id) : statement.run(text, id)).changes > 0;
+    },
     setRouting: (routing) => {
       const record = parseSessionRoutingRecord(routing);
       upsertSessionRouting(db, {
@@ -200,6 +218,33 @@ export function wrapSqliteInbound(db: Database.Database, nextSequence = () => ne
     insertMessage: async (message) => insertMessage(db, message, nextSequence()),
     countDueMessages: () => countDueMessages(db),
     markMessageFailed: (messageId) => markMessageFailed(db, messageId),
+    cancelConversation: (before) => {
+      const rows = db
+        .prepare(
+          `SELECT id, content FROM messages_in
+        WHERE kind IN ('chat','chat-sdk','webhook') AND julianday(timestamp) <= julianday(?)
+          AND seq >= (SELECT MIN(seq) FROM messages_in WHERE trigger=1 AND kind IN ('chat','chat-sdk','webhook')
+            AND status IN ('pending','processing') AND julianday(timestamp) <= julianday(?))`,
+        )
+        .all(before, before) as Array<{ id: string; content: string }>;
+      const cancel = db.prepare("UPDATE messages_in SET status='cancelled' WHERE id=?");
+      const targets = rows.flatMap((row) => {
+        try {
+          const content = JSON.parse(row.content) as { feedbackTarget?: unknown } | null;
+          return content?.feedbackTarget
+            ? parseAgentProgress({ phase: 'cancelled', targets: [content.feedbackTarget] }).targets
+            : [];
+        } catch (error) {
+          // Malformed optional UI metadata must never block a stop request.
+          log.warn('Invalid cancellation feedback target ignored', { messageId: row.id, err: error });
+          return [];
+        }
+      });
+      db.transaction(() => {
+        for (const row of rows) cancel.run(row.id);
+      })();
+      return targets;
+    },
     retryWithBackoff: (messageId, backoffSec) => retryWithBackoff(db, messageId, backoffSec),
     getMessageForRetry: (messageId, status) => {
       const row = getMessageForRetry(db, messageId, status);
@@ -307,6 +352,13 @@ export function wrapSqliteOutbound(
 ): OutboundMailbox {
   const readable = () => (typeof source === 'function' ? source() : source);
   return {
+    getProviderContinuation: (provider) =>
+      (
+        readable()
+          .prepare('SELECT value FROM session_state WHERE key=?')
+          .get(`continuation:${provider.toLowerCase()}`) as { value: string } | undefined
+      )?.value,
+
     getTerminalProcessingAcks: () =>
       (
         readable()
@@ -471,8 +523,16 @@ export class SqliteAgentMailbox implements AgentMailbox {
       // direct outbound writes scan messages_out) — the host must never read
       // the container-owned outbound.db just to insert an inbound row; the
       // two-DB split exists to avoid exactly that cross-mount coupling.
+      const inboundMailbox = wrapSqliteInbound(inbound);
       return await action({
-        ...wrapSqliteInbound(inbound),
+        ...inboundMailbox,
+        updateQueuedInput: (id, text) =>
+          readableOutbound().transaction(() => {
+            // Hold the outbound read lock through the inbound mutation. A runner
+            // either claimed first, or must re-read the edited row after claiming.
+            if (readableOutbound().prepare('SELECT 1 FROM processing_ack WHERE message_id=?').get(id)) return false;
+            return inboundMailbox.updateQueuedInput(id, text);
+          })(),
         ...wrapSqliteOutbound(readableOutbound, writableOutbound),
       });
     } finally {

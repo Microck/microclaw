@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 
 import type { GatewayCatalogEntry } from '../../setup/gateways/catalog.js';
 import { getInstallSlug } from '../../src/install-slug.js';
+import { rebuildGroupImages } from '../update-customizations.js';
 import { refreshInstalledSkills, type SkillsRefreshReport } from '../update-skills.js';
 import { stampChannel, type UpdateChannel } from './channel.js';
 import {
@@ -12,6 +13,7 @@ import {
   defaultServiceEnvironment,
   detectService,
   drainContainers,
+  usesHostRuntime,
   gatewayRestartCommand,
   restartGatewayContainers,
   shellQuote,
@@ -403,7 +405,7 @@ export async function validateUpdate(
     checks.push('host dependencies');
     runtime.runner.run('pnpm', ['run', 'build'], state.stageRoot);
     checks.push('host build');
-    runtime.runner.run('pnpm', ['test'], state.stageRoot);
+    runtime.runner.run('pnpm', ['test', '--maxWorkers', '1', '--no-file-parallelism'], state.stageRoot);
     checks.push('host tests');
 
     if (hasChanged(state, 'container/agent-runner')) {
@@ -737,6 +739,7 @@ function restoreSnapshot(state: UpdateState, log: (message: string) => void): vo
           ? 'Nothing was deleted: the live files are back where they were. The snapshot is complete.'
           : `Some live files could not be put back: ${stranded.join('; ')}. The snapshot is complete.`,
       ].join('\n'),
+      { cause: err },
     );
   }
   for (const { aside } of swaps) {
@@ -749,7 +752,7 @@ function restoreSnapshot(state: UpdateState, log: (message: string) => void): vo
 }
 
 function containerBuildArgs(envFile: string, state: UpdateState): string[] | undefined {
-  if (!hasChanged(state, 'container')) return undefined;
+  if (!hasChanged(state, 'container') || usesHostRuntime(path.dirname(envFile))) return undefined;
   const hardened = fs.existsSync(envFile) && /^NANOCLAW_HARDENED_IMAGE=true$/m.test(fs.readFileSync(envFile, 'utf8'));
   return ['container/build.sh', ...(hardened ? ['pull'] : [])];
 }
@@ -760,8 +763,13 @@ function installAndBuild(root: string, state: UpdateState, runtime: UpdateRuntim
   // refuses a binary of another version: callers load their modules first.
   runtime.runner.run('pnpm', ['install', '--frozen-lockfile'], root);
   runtime.runner.run('pnpm', ['run', 'build'], root);
+  if (usesHostRuntime(root) && hasChanged(state, 'container/agent-runner'))
+    runtime.runner.run('bun', ['install', '--frozen-lockfile'], path.join(root, 'container/agent-runner'));
   const container = containerBuildArgs(path.join(root, '.env'), state);
-  if (container) runtime.runner.run('bash', container, root);
+  if (container) {
+    runtime.runner.run('bash', container, root);
+    rebuildGroupImages(root, (command, args, cwd) => runtime.runner.run(command, args, cwd));
+  }
 }
 
 /**
@@ -782,6 +790,10 @@ function manualRecovery(err: unknown, restored: boolean, state: UpdateState, run
     `cd ${shellQuote(state.projectRoot)}`,
     ...(restored ? [] : [...manualRestoreSteps(state), gatewayRestartCommand(state.projectRoot)]),
     'pnpm install --frozen-lockfile && pnpm run build',
+    ...(usesHostRuntime(restored ? state.projectRoot : path.join(state.transactionRoot, 'snapshot')) &&
+    hasChanged(state, 'container/agent-runner')
+      ? ['(cd container/agent-runner && bun install --frozen-lockfile)']
+      : []),
     ...(container ? [`bash ${container.join(' ')}`] : []),
   ];
   const start = state.service?.active ? startCommand(state.service, runtime.serviceEnv.uid) : undefined;
@@ -823,7 +835,7 @@ async function rollbackLocal(state: UpdateState, runtime: UpdateRuntime): Promis
     runtime.restartGateways(state.projectRoot);
     installAndBuild(state.projectRoot, state, runtime);
   } catch (err) {
-    throw new Error(manualRecovery(err, restored, state, runtime));
+    throw new Error(manualRecovery(err, restored, state, runtime), { cause: err });
   }
   if (state.service?.active) {
     runtime.startService(state.service, state.projectRoot);
@@ -843,7 +855,7 @@ async function rollbackAfter(cause: unknown, state: UpdateState, runtime: Update
   } catch (err) {
     state.lastError = `${errorText(cause)}\nThe automatic rollback failed too: ${errorText(err)}`;
     saveState(state);
-    throw new Error(state.lastError);
+    throw new Error(state.lastError, { cause: err });
   }
 }
 

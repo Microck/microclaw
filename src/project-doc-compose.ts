@@ -1,3 +1,4 @@
+import { renderHostPaths } from './host-session.js';
 /**
  * Project-document composition for agent groups.
  *
@@ -69,6 +70,8 @@ export interface ProviderInstructionFacts {
 
 /** Everything that differs between providers. The composition itself does not. */
 export interface ProjectDocSpec {
+  /** Native host execution renders ordinary filesystem paths. */
+  hostExecution?: boolean;
   /** File written into the group directory, e.g. `CLAUDE.md`. */
   fileName: string;
   /** Provider variables for the canonical instruction template. */
@@ -92,11 +95,21 @@ export const MEMORY_NOTE_PLACEHOLDER = '{{provider-memory-note}}';
  * substituted (or the placeholder stripped without a trace). The no-facts
  * render is byte-identical to the template minus the placeholder paragraph.
  */
-export function renderBaseInstructions(template: string, facts?: ProviderInstructionFacts): string {
+export function renderBaseInstructions(
+  template: string,
+  facts?: ProviderInstructionFacts,
+  nativeAgentDir?: string,
+): string {
   const files = facts?.nativeOverrideFiles ?? [];
   const note =
     files.length > 0 ? `Do not use ${files.map((file) => `\`${file}\``).join(' or ')} for memory.` : undefined;
-  return template.replace(`\n\n${MEMORY_NOTE_PLACEHOLDER}`, note ? `\n\n${note}` : '');
+  return template
+    .replace(`\n\n${MEMORY_NOTE_PLACEHOLDER}`, note ? `\n\n${note}` : '')
+    .replace(/{{#(host|container)}}\n([\s\S]*?)\n{{\/\1}}/g, (_match, runtime: string, body: string) =>
+      (runtime === 'host') === Boolean(nativeAgentDir) ? body : '',
+    )
+    .replaceAll('{{agent-directory}}', nativeAgentDir ?? '/workspace/agent')
+    .replaceAll('{{host-file-tool}}', nativeAgentDir ? 'ordinary file and shell tools' : 'host-tools');
 }
 
 /**
@@ -118,7 +131,7 @@ export function renderNativeSkillsSection(
         (skills.ruleBearingInlined
           ? ' A skill whose rules must hold before the task is recognised ships an `instructions.md` instead, and those arrive inlined as `NanoClaw Skill:` sections of this document.'
           : ''),
-      `Skills YOU author or install yourself go in \`${skills.selfAuthoredHome}/<name>/SKILL.md\` — persistent across sessions and discovered automatically. Never write skills elsewhere: paths outside ${roots} are ephemeral or not discovered.`,
+      `Skills created for your own learning go in \`${skills.selfAuthoredHome}/<name>/SKILL.md\`, persistent across sessions and discovered automatically. ${roots} are this assistant's persistent skill roots. If the user explicitly requests installing or editing a skill elsewhere, use the requested path through the host connection when needed; the target application controls discovery there.`,
     ].join('\n\n'),
   };
 }
@@ -190,12 +203,19 @@ export async function composeGroupProjectDoc(
   // droppable: a group whose persona is evicted stops being that group.
   const persona = readGroupPersona(groupDir);
   if (persona) push('Persona', persona);
+  const soul = readGroupPersona(groupDir, 'SOUL.md');
+  if (soul) push('Personality', soul);
 
   const legacySpec = spec.baseDocPath !== undefined;
   const baseDoc = path.resolve(process.cwd(), spec.baseDocPath ?? BASE_INSTRUCTIONS_PATH);
   if (fs.existsSync(baseDoc)) {
     const template = fs.readFileSync(baseDoc, 'utf-8');
-    push(BASE_DOC_SECTION, legacySpec ? template : renderBaseInstructions(template, spec.instructions));
+    push(
+      BASE_DOC_SECTION,
+      legacySpec
+        ? template
+        : renderBaseInstructions(template, spec.instructions, spec.hostExecution ? groupDir : undefined),
+    );
   } else {
     // Tolerated (a partial checkout has no template yet) but never silent:
     // losing the runtime contract with no signal is the exact shape of the bug
@@ -210,6 +230,7 @@ export async function composeGroupProjectDoc(
   for (const section of spec.extraSections ?? []) push(section.name, section.body);
 
   const nativeSkills = renderNativeSkillsSection(spec.instructions);
+  if (nativeSkills && spec.hostExecution) nativeSkills.body = renderHostPaths(nativeSkills.body, groupDir);
   if (nativeSkills) push(nativeSkills.name, nativeSkills.body);
 
   // Module instructions — every MCP/CLI module shipping a sibling
@@ -222,7 +243,12 @@ export async function composeGroupProjectDoc(
       if (!match) continue;
       const moduleName = match[1];
       if (cliDisabled && NCL_DEPENDENT_MODULES.has(moduleName)) continue;
-      push(`NanoClaw Module: ${moduleName}`, fs.readFileSync(path.join(mcpToolsHostDir, entry), 'utf-8'), true);
+      const moduleInstructions = fs.readFileSync(path.join(mcpToolsHostDir, entry), 'utf-8');
+      push(
+        `NanoClaw Module: ${moduleName}`,
+        spec.hostExecution ? renderHostPaths(moduleInstructions, groupDir) : moduleInstructions,
+        true,
+      );
     }
   }
 
@@ -236,7 +262,12 @@ export async function composeGroupProjectDoc(
       if (selectedSkills !== 'all' && !selectedSkills.includes(skillName)) continue;
       const hostFragment = path.join(skillsHostDir, skillName, 'instructions.md');
       if (!fs.existsSync(hostFragment)) continue;
-      push(`NanoClaw Skill: ${skillName}`, fs.readFileSync(hostFragment, 'utf-8'), true);
+      const skillInstructions = fs.readFileSync(hostFragment, 'utf-8');
+      push(
+        `NanoClaw Skill: ${skillName}`,
+        spec.hostExecution ? renderHostPaths(skillInstructions, groupDir) : skillInstructions,
+        true,
+      );
     }
   }
 

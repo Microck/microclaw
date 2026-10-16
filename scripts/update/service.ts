@@ -414,7 +414,63 @@ export const CONTROLLER_GATEWAY_ROLE = 'gateway';
  * container still listed at the timeout is, and the caller restores the old
  * service.
  */
+/** The standalone update controller cannot import the installed driver's dependency graph. */
+export function usesHostRuntime(projectRoot: string): boolean {
+  // Match src/env.ts exactly. The archived controller has no core dependency tree;
+  // a differential test pins this small reader to runtime configuration semantics.
+  let configured = '';
+  try {
+    for (const line of fs.readFileSync(path.join(projectRoot, '.env'), 'utf8').split('\n')) {
+      const trimmed = line.trim();
+      const split = trimmed.indexOf('=');
+      if (split < 0 || trimmed.slice(0, split).trim() !== 'NANOCLAW_RUNTIME_DRIVER') continue;
+      let value = trimmed.slice(split + 1).trim();
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
+        value = value.slice(1, -1);
+      if (value) configured = value;
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  return (process.env.NANOCLAW_RUNTIME_DRIVER?.trim() || configured.trim()).toLowerCase() === 'host';
+}
+
 export async function drainContainers(projectRoot: string, env: ServiceEnvironment, timeoutMs = 60_000): Promise<void> {
+  if (usesHostRuntime(projectRoot)) {
+    const pattern = `nanoclaw-host-${getInstallSlug(projectRoot)}-*.service`;
+    const list = (active = false): string[] => {
+      const text = env.runner.run(
+        'systemctl',
+        [
+          '--user',
+          'list-units',
+          '--all',
+          '--output=json',
+          ...(active ? ['--state=active,activating,deactivating'] : []),
+          pattern,
+        ],
+        projectRoot,
+        { timeoutMs: CUTOVER_LIST_CLI_TIMEOUT_MS },
+      );
+      const rows = JSON.parse(text) as { unit: string }[];
+      return rows.map(({ unit }) => {
+        if (!unit.startsWith(pattern.slice(0, -9)) || !/^[a-zA-Z0-9_.-]+$/.test(unit))
+          throw new Error('Unexpected native session unit identity');
+        return unit;
+      });
+    };
+    const units = list();
+    if (units.length) {
+      env.log?.(`Stopping ${units.length} native NanoClaw session(s)`);
+      env.runner.tryRun('systemctl', ['--user', 'stop', ...units], projectRoot, { timeoutMs });
+      if (list(true).length)
+        throw new Error('Native NanoClaw sessions remain active; refusing to replace runtime files');
+      env.runner.tryRun('systemctl', ['--user', 'reset-failed', ...units], projectRoot, {
+        timeoutMs: CUTOVER_LIST_CLI_TIMEOUT_MS,
+      });
+    }
+  }
+
   const runtime = process.env.CONTAINER_RUNTIME ?? 'docker';
   const label = `nanoclaw-install=${getInstallSlug(projectRoot)}`;
   const list = (): { ok: boolean; ids: string[] } => {

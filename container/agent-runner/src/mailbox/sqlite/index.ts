@@ -1,6 +1,8 @@
 import {
   closeSessionDb,
   getInboundDb,
+  getOutboundDb,
+  openInboundDb,
   sqliteClearContainerToolInFlight,
   sqliteClearStaleProcessingAcks,
   sqliteSetContainerToolInFlight,
@@ -39,6 +41,7 @@ import type {
   AgentMailbox,
   InboundMessage,
   MailboxOperations,
+  MemoryTranscriptEntry,
   MailboxSessionKey,
   OutboundMessage,
   ProcessingStatus,
@@ -112,8 +115,93 @@ export class SqliteAgentMailbox implements AgentMailbox {
     closeSessionDb();
   }
 
-  getPendingMessages(limit: number, isFirstPoll: boolean): InboundMessage[] {
-    return sqliteGetPendingMessages(isFirstPoll, limit).flatMap((row) => {
+  getMemoryTranscript(
+    since: string,
+    previousRevision?: string,
+  ): { revision: string; entries?: MemoryTranscriptEntry[] } {
+    const inbound = openInboundDb();
+    try {
+      const latestUser = inbound
+        .prepare(
+          `SELECT COALESCE(MAX(seq),0) AS seq FROM messages_in
+        WHERE kind IN ('chat','chat-sdk') AND channel_type='discord' AND trigger=1
+        AND julianday(timestamp)>=julianday(?)`,
+        )
+        .get(since) as { seq: number };
+      const latestReply = getOutboundDb()
+        .prepare(
+          `SELECT COALESCE(MAX(seq),0) AS seq FROM messages_out
+        WHERE kind='chat' AND channel_type='discord' AND julianday(timestamp)>=julianday(?)`,
+        )
+        .get(since) as { seq: number };
+      const latestVoice = getOutboundDb()
+        .prepare("SELECT MAX(updated_at) AS latest FROM session_state WHERE key LIKE 'voice:%'")
+        .get() as { latest: string | null };
+      const revision = `${latestUser.seq}:${latestReply.seq}:${latestVoice.latest ?? ''}`;
+      if (revision === previousRevision) return { revision };
+      const userRows = inbound
+        .prepare(
+          `SELECT id,timestamp,content,platform_id,thread_id FROM messages_in
+        WHERE kind IN ('chat','chat-sdk') AND channel_type='discord' AND trigger=1
+          AND julianday(timestamp)>=julianday(?) ORDER BY seq`,
+        )
+        .all(since) as Array<{
+        id: string;
+        timestamp: string;
+        content: string;
+        platform_id: string;
+        thread_id: string | null;
+      }>;
+      const route = inbound
+        .prepare(
+          `SELECT platform_id,thread_id FROM messages_in
+        WHERE kind IN ('chat','chat-sdk') AND channel_type='discord' AND trigger=1
+        ORDER BY seq DESC LIMIT 1`,
+        )
+        .get() as { platform_id: string; thread_id: string | null } | undefined;
+      if (!route) return { revision, entries: [] };
+      const assistantRows = getOutboundDb()
+        .prepare(
+          `SELECT id,timestamp,content FROM messages_out
+        WHERE kind='chat' AND channel_type='discord' AND platform_id=? AND thread_id IS ?
+          AND julianday(timestamp)>=julianday(?) ORDER BY seq`,
+        )
+        .all(route.platform_id, route.thread_id, since) as Array<{ id: string; timestamp: string; content: string }>;
+      const voiceRows = getOutboundDb()
+        .prepare("SELECT key,value FROM session_state WHERE key IN (SELECT 'voice:' || value FROM json_each(?))")
+        .all(JSON.stringify(userRows.map((row) => row.id))) as Array<{ key: string; value: string }>;
+      const voice = new Map(voiceRows.map((row) => [row.key.slice(6), JSON.parse(row.value) as { text: string }]));
+      const entries: MemoryTranscriptEntry[] = [];
+      for (const [role, rows] of [
+        ['user', userRows],
+        ['assistant', assistantRows],
+      ] as const) {
+        for (const row of rows) {
+          const content = JSON.parse(row.content) as { text?: string; failureNotice?: boolean };
+          const text = role === 'user' ? (voice.get(row.id)?.text ?? content.text) : content.text;
+          if (typeof text === 'string' && text && !content.failureNotice)
+            entries.push({ id: row.id, timestamp: sqliteTimestamp(row.timestamp), role, text });
+        }
+      }
+      return {
+        revision,
+        entries: entries.sort(
+          (a, b) =>
+            a.timestamp.localeCompare(b.timestamp) ||
+            (a.role === b.role ? a.id.localeCompare(b.id) : a.role === 'user' ? -1 : 1),
+        ),
+      };
+    } finally {
+      inbound.close();
+    }
+  }
+
+  hasMessageOut(id: string): boolean {
+    return !!getOutboundDb().prepare('SELECT 1 FROM messages_out WHERE id=?').get(id);
+  }
+
+  getPendingMessages(limit: number, isFirstPoll: boolean, busy = false): InboundMessage[] {
+    return sqliteGetPendingMessages(isFirstPoll, limit, busy).flatMap((row) => {
       const message = parseInboundMessage(row);
       return message ? [message] : [];
     });

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 
 import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from './mailbox/sqlite/connection.js';
-import { getPendingMessages, markCompleted, type MessageInRow } from './db/messages-in.js';
+import { getPendingMessages, markCompleted, claimMessages, type MessageInRow } from './db/messages-in.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
 import { formatMessages, extractRouting, isClearCommand, isRunnerCommand } from './formatter.js';
 import { processQuery } from './poll-loop.js';
@@ -456,11 +456,12 @@ describe('error result with no <message> envelope', () => {
 
     await processQuery(query, ERR_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
 
-    const out = getUndeliveredMessages();
+    const out = getUndeliveredMessages().filter((message) => message.kind === 'chat');
     expect(out).toHaveLength(1);
     expect(JSON.parse(out[0].content)).toEqual({
       text: 'The agent run failed. Check the logs for details.',
       failureNotice: true,
+      needsInput: true,
     });
     expect(out[0].platform_id).toBe('chan-1');
     expect(out[0].channel_type).toBe('discord');
@@ -502,7 +503,7 @@ describe('error result with no <message> envelope', () => {
     }
 
     expect(lines.filter((line) => line.includes(expected))).toHaveLength(1);
-    expect(getUndeliveredMessages()).toHaveLength(0);
+    expect(getUndeliveredMessages().filter((message) => message.kind === 'chat')).toHaveLength(0);
   });
 
   it('still nudges (and does not deliver) a normal unwrapped result', async () => {
@@ -510,7 +511,7 @@ describe('error result with no <message> envelope', () => {
 
     await processQuery(query, ERR_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
 
-    expect(getUndeliveredMessages()).toHaveLength(0);
+    expect(getUndeliveredMessages().filter((message) => message.kind === 'chat')).toHaveLength(0);
     expect(pushes).toHaveLength(1);
     expect(pushes[0]).toContain('was not delivered');
   });
@@ -602,7 +603,7 @@ describe('a2a failure notices (never answer a notice with a notice)', () => {
     insertRow('n1', { text: 'Incorrect API key', failureNotice: true }, 'agent', 'ag-b');
     insertRow('m2', { text: 'any update?', sender: 'Alice' }, 'discord', 'chan-1');
     await failTurn();
-    const out = getUndeliveredMessages();
+    const out = getUndeliveredMessages().filter((message) => message.kind === 'chat');
     expect(out).toHaveLength(1);
     expect(JSON.parse(out[0].content).failureNotice).toBe(true);
     // The requester hears about it, not the agent whose notice came first.
@@ -808,4 +809,30 @@ describe('task-run turn wiring (real processQuery)', () => {
     // slow runners the test died as a mute timeout instead of reaching the
     // diagnostic throw above (observed consistently on CI-hosted runners).
   }, 20_000);
+});
+
+describe('durable queued inputs', () => {
+  it('does not steer with queued messages, does not hide ordinary steering, and releases one queued input at a time', () => {
+    for (let i = 0; i < 12; i++) insertMessage(`q${i}`, 'chat', { text: `queued ${i}`, delivery: 'queue' });
+    expect(getPendingMessages(false, true)).toEqual([]);
+    insertMessage('steer', 'chat', { text: 'change direction' });
+    expect(getPendingMessages(false, true).map((message) => message.id)).toEqual(['steer']);
+    markCompleted(['steer']);
+    expect(getPendingMessages().map((message) => message.id)).toEqual(['q0']);
+    markCompleted(['q0']);
+    expect(getPendingMessages().map((message) => message.id)).toEqual(['q1']);
+  });
+});
+
+it('uses the edited queue content and honors removal when selection raced a host edit', () => {
+  insertMessage('queued-edit', 'chat', { text: 'old', delivery: 'queue' });
+  const selected = getPendingMessages();
+  getInboundDb()
+    .prepare("UPDATE messages_in SET content=? WHERE id='queued-edit'")
+    .run(JSON.stringify({ text: 'new', delivery: 'queue' }));
+  expect(JSON.parse(claimMessages(selected)[0].content).text).toBe('new');
+  insertMessage('queued-remove', 'chat', { text: 'removed', delivery: 'queue' });
+  const removed = getPendingMessages();
+  getInboundDb().prepare("UPDATE messages_in SET status='cancelled' WHERE id='queued-remove'").run();
+  expect(claimMessages(removed)).toEqual([]);
 });

@@ -1,3 +1,4 @@
+import { composeHostProcess } from './host-session.js';
 /**
  * Container Runner v2
  *
@@ -205,7 +206,19 @@ async function releaseClaimQuietly(sessionId: string, incarnation: number): Prom
  * a duplicate container against the same session directory, producing racy
  * double-replies.
  */
-const wakePromises = new Map<string, Promise<boolean>>();
+const wakePromises = new Map<string, { agentGroupId: string; promise: Promise<boolean> }>();
+
+/** Call immediately before a synchronous workspace mutation. No await may
+ * separate this check from that mutation: a new wake must see the new files.
+ * Persisted state also refuses writers this process has not adopted yet. */
+export function assertAgentGroupIdle(agentGroupId: string, sessions: readonly Session[]): void {
+  if (
+    sessions.some((session) => session.container_status !== 'stopped' || pendingAdoptions.has(session.id)) ||
+    [...activeContainers.values()].some((runtime) => runtime.handle.key.agentGroupId === agentGroupId) ||
+    [...wakePromises.values()].some((wake) => wake.agentGroupId === agentGroupId)
+  )
+    throw new Error('This agent has active or starting work. Stop its conversations and request removal again.');
+}
 
 export function getActiveContainerCount(): number {
   return activeContainers.size;
@@ -334,7 +347,7 @@ export function wakeContainer(session: Session): Promise<boolean> {
   const existing = wakePromises.get(session.id);
   if (existing) {
     log.debug('Container wake already in-flight — joining existing promise', { sessionId: session.id });
-    return existing;
+    return existing.promise;
   }
   const promise = spawnContainer(session)
     .then(() => true)
@@ -345,7 +358,7 @@ export function wakeContainer(session: Session): Promise<boolean> {
     .finally(() => {
       wakePromises.delete(session.id);
     });
-  wakePromises.set(session.id, promise);
+  wakePromises.set(session.id, { agentGroupId: session.agent_group_id, promise });
   return promise;
 }
 
@@ -430,6 +443,8 @@ async function spawnContainer(session: Session): Promise<void> {
       gateway,
       mailboxEnvironment,
     });
+
+    if (driver.capabilities().hostExecution) composeHostProcess(spec);
 
     log.info('Spawning session', { sessionId: session.id, agentGroup: agentGroup.name, containerName });
 
@@ -1014,7 +1029,11 @@ export async function resolveProviderContribution(
     context.selectedSkills,
     {
       legacyOverlay: () => Promise.resolve(fn?.({ ...context, coreOwnsProviderSurfaces: true as const }) ?? {}),
-      composeProjectDocument: (spec) => composeGroupProjectDoc(agentGroup, context.groupDir, spec),
+      composeProjectDocument: (spec) =>
+        composeGroupProjectDoc(agentGroup, context.groupDir, {
+          ...spec,
+          hostExecution: getSessionDriver().capabilities().hostExecution,
+        }),
     },
   );
   return { provider, contribution: surfaces.contribution, surfaces };
@@ -1054,7 +1073,12 @@ export async function buildMounts(
       {
         legacyOverlay: async () => providerContribution,
         composeProjectDocument: (spec) =>
-          composeGroupProjectDoc(agentGroup, groupDir, spec, selectedSkillNames(containerConfig)),
+          composeGroupProjectDoc(
+            agentGroup,
+            groupDir,
+            { ...spec, hostExecution: getSessionDriver().capabilities().hostExecution },
+            selectedSkillNames(containerConfig),
+          ),
       },
     );
     skillBackingPaths = providerSurfaces.skillBackingPaths;
@@ -1063,7 +1087,12 @@ export async function buildMounts(
 
     // Compose CLAUDE.md fresh every spawn: every instruction source inlined
     // into one flat file. See `project-doc-compose.ts`.
-    await composeGroupProjectDoc(agentGroup, groupDir, DEFAULT_PROJECT_DOC, selectedSkillNames(containerConfig));
+    await composeGroupProjectDoc(
+      agentGroup,
+      groupDir,
+      { ...DEFAULT_PROJECT_DOC, hostExecution: getSessionDriver().capabilities().hostExecution },
+      selectedSkillNames(containerConfig),
+    );
   }
 
   const mounts: VolumeMount[] = [];

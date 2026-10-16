@@ -78,7 +78,7 @@ export async function getSessionsByAgentGroup(agentGroupId: string): Promise<Ses
 
 /**
  * A conversation's most recently active sessions: active rows of one agent
- * group × messaging group whose `last_active` is at or after `activeSinceIso`
+ * group × messaging group × exact thread whose `last_active` is at or after `activeSinceIso`
  * (ISO-8601 UTC), newest first, at most `limit`. Bounded on purpose: callers
  * on the message path must never need the whole session list of a busy
  * channel. Sessions that never received a message (`last_active` NULL) are
@@ -87,17 +87,19 @@ export async function getSessionsByAgentGroup(agentGroupId: string): Promise<Ses
 export async function getRecentConversationSessions(
   agentGroupId: string,
   messagingGroupId: string,
+  threadId: string | null,
   activeSinceIso: string,
   limit: number,
 ): Promise<Session[]> {
   return getDb().all<Session>(
     `SELECT * FROM sessions
-       WHERE agent_group_id = ? AND messaging_group_id = ? AND status = 'active'
+       WHERE agent_group_id = ? AND messaging_group_id = ? AND thread_id IS ? AND status = 'active'
          AND last_active IS NOT NULL AND last_active >= ?
        ORDER BY last_active DESC
        LIMIT ?`,
     agentGroupId,
     messagingGroupId,
+    threadId,
     activeSinceIso,
     limit,
   );
@@ -144,6 +146,17 @@ export async function findTaskSessions(agentGroupId: string, includeClosed = fal
 
 export async function getActiveSessions(): Promise<Session[]> {
   return getDb().all<Session>("SELECT * FROM sessions WHERE status = 'active'");
+}
+
+/**
+ * Empty conversation records preserve engagement without owning mailbox work.
+ * writeSessionMessage stamps last_active before waking; task sessions need
+ * polling even before their first run because their messages are future-dated.
+ */
+export async function getSessionsForPolling(): Promise<Session[]> {
+  return getDb().all<Session>(
+    "SELECT * FROM sessions WHERE status = 'active' AND (messaging_group_id IS NULL OR last_active IS NOT NULL)",
+  );
 }
 
 export async function getRunningSessions(): Promise<Session[]> {

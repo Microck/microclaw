@@ -1,3 +1,4 @@
+import { AGENT_DIR } from './runtime-paths.js';
 /**
  * Runner config — reads /workspace/agent/container.json at startup.
  *
@@ -9,7 +10,7 @@ import fs from 'fs';
 
 import type { McpServerConfig, ProviderSpeed } from './providers/types.js';
 
-const CONFIG_PATH = '/workspace/agent/container.json';
+const CONFIG_PATH = `${AGENT_DIR}/container.json`;
 
 export interface RunnerConfig {
   provider: string;

@@ -1,20 +1,7 @@
 /**
- * Cross-session context module.
- *
- * Push layer: fan-out of triggering user messages (router hook) and delivered
- * user-facing agent messages (delivery hook) into sibling sessions OF THE
- * SAME CONVERSATION as trigger=0 'session-echo' rows — bounded to the
- * conversation's hot set (HOT_SESSION_LIMIT most recently active sessions
- * within ECHO_MAX_AGE_DAYS, plus its top-level session), written concurrently,
- * off the message's critical path. Cross-conversation awareness is pull-only.
- * Backlog capped by the host-sweep pruner.
- *
- * Pull layer: a new or long-idle session is seeded from the hot set at wake
- * (backfill.ts); `ncl sessions history` gives full-depth catch-up on demand
- * (registered by src/cli/resources/sessions.ts).
- *
- * No import-time registration — the hooks are direct calls from
- * router.ts / delivery.ts / reconcile-session.ts, kept modular.
+ * Conversation-scoped delivery context and explicit history retrieval.
+ * Automatic context stays within agent group × messaging group × exact thread.
+ * Other conversations are available only through explicit session-history reads.
  */
 export {
   ECHO_BACKLOG_CAP,

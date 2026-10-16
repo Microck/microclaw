@@ -1,3 +1,4 @@
+import { AGENT_DIR, SESSION_DIR } from './runtime-paths.js';
 /**
  * NanoClaw Agent Runner v2
  *
@@ -28,6 +29,7 @@ import { loadConfig } from './config.js';
 import { buildSystemPromptAddendum } from './destinations.js';
 import { getTaskSeriesId } from './db/session-routing.js';
 import { ensureMemoryScaffold } from './memory/scaffold.js';
+import { startSupermemory, stopSupermemory } from './memory/supermemory.js';
 import { MEMORY_SESSION_HOOK } from './memory/session-hook.js';
 // Module barrel — loads registration modules, including the singular mailbox slot.
 import './modules/index.js';
@@ -50,7 +52,7 @@ function log(msg: string): void {
   console.error(`[agent-runner] ${msg}`);
 }
 
-const CWD = '/workspace/agent';
+const CWD = AGENT_DIR;
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -63,6 +65,11 @@ async function main(): Promise<void> {
   // Every provider shares one persistent memory tree. Legacy imports are an
   // operator-run migration and never happen in this normal startup path.
   ensureMemoryScaffold();
+  try {
+    await startSupermemory();
+  } catch {
+    log('Supermemory configuration unavailable; continuing with local memory');
+  }
 
   // The agent browser trusts only NSS, not the gateway CA env vars.
   trustGatewayCaForChromium({ log });
@@ -81,7 +88,7 @@ async function main(): Promise<void> {
 
   // Discover additional directories mounted at /workspace/extra/*
   const additionalDirectories: string[] = [];
-  const extraBase = '/workspace/extra';
+  const extraBase = `${SESSION_DIR}/extra`;
   if (fs.existsSync(extraBase)) {
     for (const entry of fs.readdirSync(extraBase)) {
       const fullPath = path.join(extraBase, entry);
@@ -138,6 +145,7 @@ async function main(): Promise<void> {
       systemContext: { instructions },
     });
   } finally {
+    await stopSupermemory();
     await mailbox.stop();
   }
 }

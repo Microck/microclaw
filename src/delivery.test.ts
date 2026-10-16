@@ -40,6 +40,7 @@ import { createChannelDeliveryAdapter } from './channels/channel-registry.js';
 import { createDestination } from './modules/agent-to-agent/db/agent-destinations.js';
 import { getAgentMailbox } from './mailbox/index.js';
 import { log } from './log.js';
+import { DeliveryOutcomeUnknownError } from './channels/adapter.js';
 
 function openInboundDb(agentGroupId: string, sessionId: string): Database.Database {
   return new Database(inboundDbPath(agentGroupId, sessionId));
@@ -182,6 +183,36 @@ describe('deliverSessionMessages — concurrent invocations', () => {
     await deliverSessionMessages(session);
 
     expect(callCount).toBe(1);
+  });
+});
+
+describe('deliverSessionMessages — uncertain platform writes', () => {
+  it('records an unknown send terminally instead of repeating it on subsequent polls', async () => {
+    await seedAgentAndChannel();
+    const { session } = await resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutbound('ag-1', session.id, 'out-uncertain');
+    let calls = 0;
+    let deliveryId: string | undefined;
+    const finalized: string[] = [];
+    setDeliveryAdapter({
+      async finalizeDelivery(id) {
+        finalized.push(id);
+      },
+      async deliver(_channel, _platform, _thread, _kind, _content, _files, _instance, _sender, id) {
+        calls++;
+        deliveryId = id;
+        throw new DeliveryOutcomeUnknownError();
+      },
+    });
+    await deliverSessionMessages(session);
+    await deliverSessionMessages(session);
+    expect(calls).toBe(1);
+    expect(deliveryId).toBe('out-uncertain');
+    expect(finalized).toEqual(['out-uncertain']);
+    const db = openInboundDb('ag-1', session.id);
+    const receipt = db.prepare('SELECT status FROM delivered WHERE message_out_id = ?').get('out-uncertain');
+    expect(receipt).toEqual({ status: 'failed' });
+    db.close();
   });
 });
 

@@ -26,7 +26,7 @@ function hasOnWakeColumn(db: ReturnType<typeof openInboundDb>): boolean {
   return hasOnWake;
 }
 
-export function sqliteGetPendingMessages(isFirstPoll: boolean, limit: number): MessageInRow[] {
+export function sqliteGetPendingMessages(isFirstPoll: boolean, limit: number, busy = false): MessageInRow[] {
   const inbound = openInboundDb();
   const outbound = getOutboundDb();
   try {
@@ -46,7 +46,21 @@ export function sqliteGetPendingMessages(isFirstPoll: boolean, limit: number): M
         ({ message_id }) => message_id,
       ),
     );
-    const unclaimed = pending.filter(({ id }) => !acked.has(id));
+    const available = pending.filter(({ id }) => !acked.has(id));
+    const queued = (row: MessageInRow) => {
+      try {
+        return JSON.parse(row.content)?.delivery === 'queue';
+      } catch {
+        return false;
+      }
+    };
+    // While busy, queued inputs stay durable and unclaimed. When idle take one
+    // queued item per turn, rather than blending distinct requests together.
+    const ordinary = available.filter((row) => !queued(row));
+    const unclaimed =
+      busy || ordinary.some((row) => row.trigger === 1 && row.kind !== 'system')
+        ? ordinary
+        : [...ordinary, ...available.filter(queued).slice(0, 1)];
     const wake = unclaimed.filter(({ trigger }) => trigger === 1).slice(0, limit);
     const remaining = limit - wake.length;
     const context = remaining > 0 ? unclaimed.filter(({ trigger }) => trigger === 0).slice(-remaining) : [];

@@ -15,13 +15,13 @@ vi.mock('./reconcile-session.js', () => ({
   decideStuckAction: vi.fn(),
   shouldCloseTaskSession: vi.fn(),
 }));
-vi.mock('./db/sessions.js', () => ({ getActiveSessions: vi.fn() }));
+vi.mock('./db/sessions.js', () => ({ getSessionsForPolling: vi.fn() }));
 vi.mock('./egress-lockdown.js', () => ({ ensureEgressNetwork: vi.fn() }));
 vi.mock('./modules/approvals/index.js', () => ({ sweepAwaitingReasonRejects: vi.fn() }));
 vi.mock('./container-runner.js', () => ({ stopOrphanedSessions: vi.fn() }));
 
 import { stopOrphanedSessions } from './container-runner.js';
-import { getActiveSessions } from './db/sessions.js';
+import { getSessionsForPolling } from './db/sessions.js';
 import { ensureEgressNetwork } from './egress-lockdown.js';
 import { RECONCILE_CONCURRENCY, startHostSweep, stopHostSweep } from './host-sweep.js';
 import { sweepAwaitingReasonRejects } from './modules/approvals/index.js';
@@ -66,9 +66,9 @@ beforeEach(() => {
       order.push('orphans');
       return 0;
     });
-  vi.mocked(getActiveSessions)
+  vi.mocked(getSessionsForPolling)
     .mockReset()
-    .mockResolvedValue([{ id: 's-1' }, { id: 's-2' }] as Awaited<ReturnType<typeof getActiveSessions>>);
+    .mockResolvedValue([{ id: 's-1' }, { id: 's-2' }] as Awaited<ReturnType<typeof getSessionsForPolling>>);
 
   sweepCallbacks.length = 0;
   setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
@@ -98,7 +98,7 @@ describe('sweep over the workqueue', () => {
   });
 
   it('a session listing failure still runs the singleton duties and re-arms', async () => {
-    vi.mocked(getActiveSessions).mockRejectedValueOnce(new Error('db down'));
+    vi.mocked(getSessionsForPolling).mockRejectedValueOnce(new Error('db down'));
     await runSweepTick();
 
     expect(reconcileSession).not.toHaveBeenCalled();
@@ -112,7 +112,7 @@ describe('sweep over the workqueue', () => {
 
   it('reconciles up to RECONCILE_CONCURRENCY sessions at once, and never one key twice concurrently', async () => {
     const ids = Array.from({ length: 20 }, (_, i) => `s-${i}`);
-    vi.mocked(getActiveSessions).mockResolvedValue(ids.map((id) => ({ id })) as never);
+    vi.mocked(getSessionsForPolling).mockResolvedValue(ids.map((id) => ({ id })) as never);
     let inFlight = 0;
     let peak = 0;
     const running = new Set<string>();

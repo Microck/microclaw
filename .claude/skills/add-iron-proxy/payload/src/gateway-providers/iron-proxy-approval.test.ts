@@ -142,7 +142,7 @@ describe('Iron Proxy approval transport', () => {
     await vi.waitFor(() => expect(held.size).toBe(1));
     const decision = [...held.values()][0];
     expect(decision.request.trigger).toBe('default');
-    expect(decision.request.destination).toEqual({ host, method: 'POST', sendsPayload: true });
+    expect(decision.request.destination).toEqual({ host, method: 'POST', path: url, sendsPayload: true });
     decision.resolve('approve');
     expect(await pending.result).toMatchObject({ action: 1 });
   });
@@ -177,6 +177,7 @@ describe('Iron Proxy approval transport', () => {
     expect(decision.request.destination).toEqual({
       host: 'host.docker.internal:8000',
       method: 'POST',
+      path: '/v1/chat/completions',
       sendsPayload: true,
     });
     decision.resolve('approve');
@@ -355,7 +356,12 @@ it.each([
   const pending = transformCall({ request: { method: 'GET', host: 'docs.example.test', url: '/guide' } }, md);
   await vi.waitFor(() => expect(held.size).toBe(1));
   const decision = [...held.values()][0];
-  expect(decision.request.destination).toEqual({ host: 'docs.example.test', method: 'GET', sendsPayload: expected });
+  expect(decision.request.destination).toEqual({
+    host: 'docs.example.test',
+    method: 'GET',
+    path: '/guide',
+    sendsPayload: expected,
+  });
   decision.resolve('deny');
   expect(await pending.result).toMatchObject({ action: 2 });
 });
@@ -366,7 +372,12 @@ it('hands core the method exactly as the front received it', async () => {
   const pending = transformCall({ request: { method: 'get', host: 'docs.example.test', url: '/write' } }, md);
   await vi.waitFor(() => expect(held.size).toBe(1));
   const decision = [...held.values()][0];
-  expect(decision.request.destination).toEqual({ host: 'docs.example.test', method: 'get', sendsPayload: false });
+  expect(decision.request.destination).toEqual({
+    host: 'docs.example.test',
+    method: 'get',
+    path: '/write',
+    sendsPayload: false,
+  });
   expect(decision.request.audit).toEqual({ method: 'GET', host: 'docs.example.test', path: '/write' });
   decision.resolve('deny');
   expect(await pending.result).toMatchObject({ action: 2 });

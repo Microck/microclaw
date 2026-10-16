@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
+import net from 'node:net';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -21,6 +22,7 @@ vi.mock('../log.js', () => ({
 }));
 
 import {
+  assertProxyListening,
   defineIronProxyProvider,
   ironProxyConfig,
   ironFrontConfig,
@@ -298,4 +300,16 @@ describe('Iron Proxy provider', () => {
     await subscription;
     fs.rmSync(project, { recursive: true, force: true });
   });
+});
+
+it('admits a real listening proxy and rejects a closed listener before runner startup', async () => {
+  const server = net.createServer((socket) => socket.end());
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as net.AddressInfo).port;
+  try {
+    await expect(assertProxyListening('127.0.0.1', port)).resolves.toBeUndefined();
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+  await expect(assertProxyListening('127.0.0.1', port)).rejects.toThrow('message remains queued');
 });

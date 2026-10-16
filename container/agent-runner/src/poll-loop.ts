@@ -1,7 +1,11 @@
+import { transcribeDiscordAudio } from './audio-transcription.js';
+import { recallSupermemory, syncSupermemory } from './memory/supermemory.js';
+import { nameNewDiscordThread } from './discord-thread-title.js';
+import type { AgentProgress } from './mailbox/model.generated.js';
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
 import {
   getPendingMessages,
-  markProcessing,
+  claimMessages,
   markCompleted,
   markScriptSkipped,
   type MessageInRow,
@@ -126,7 +130,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
   while (true) {
     if (config.signal?.aborted) return;
     // Skip system messages — they're responses for MCP tools (e.g., ask_user_question)
-    const messages = getPendingMessages(isFirstPoll).filter((m) => m.kind !== 'system');
+    let messages = getPendingMessages(isFirstPoll).filter((m) => m.kind !== 'system');
     isFirstPoll = false;
     pollCount++;
 
@@ -153,8 +157,9 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       continue;
     }
 
+    messages = claimMessages(messages);
+    if (!messages.length) continue;
     const ids = messages.map((m) => m.id);
-    markProcessing(ids);
 
     const routing = extractRouting(messages);
 
@@ -200,6 +205,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
     if (commandIds.length > 0) {
       markCompleted(commandIds);
+      await publishAgentProgress(extractRouting(messages.filter((m) => commandIds.includes(m.id))), 'completed');
     }
 
     if (normalMessages.length === 0) {
@@ -232,15 +238,30 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       continue;
     }
 
+    await transcribeDiscordAudio(keep, config.signal);
+
     // Format messages: passthrough commands get raw text (only if the
     // provider natively handles slash commands), others get XML.
-    const prompt = formatMessagesWithCommands(keep, nativeSlashCommands, config.providerName);
+    const prompt =
+      (await recallSupermemory(keep)) + formatMessagesWithCommands(keep, nativeSlashCommands, config.providerName);
 
     log(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
 
+    if (!routing.feedbackTargets?.length) await publishAgentProgress(routing, 'received');
     const query = config.provider.query({
       prompt,
       continuation,
+      forkContinuation: continuation
+        ? undefined
+        : keep
+            .map((message) => {
+              try {
+                return JSON.parse(message.content)?.forkFrom;
+              } catch {
+                return undefined;
+              }
+            })
+            .find(Boolean),
       cwd: config.cwd,
       systemContext: config.systemContext,
     });
@@ -262,6 +283,14 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     const abortActiveQuery = () => query.abort();
     if (config.signal?.aborted) abortActiveQuery();
     else config.signal?.addEventListener('abort', abortActiveQuery, { once: true });
+    let titleStarted = false;
+    const nameThread = () => {
+      if (titleStarted || config.providerName !== 'codex') return;
+      titleStarted = true;
+      void nameNewDiscordThread(keep, config.signal).catch((error) =>
+        log(`Thread title unavailable: ${error instanceof Error ? error.message : String(error)}`),
+      );
+    };
     try {
       const result = await processQuery(
         query,
@@ -273,6 +302,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         continuation,
         midTurnCompleteDelivery,
         config.signal,
+        nameThread,
       );
       if (result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
@@ -371,6 +401,7 @@ export async function processQuery(
    */
   midTurnCompleteDelivery = false,
   signal?: AbortSignal,
+  onReplyComplete?: () => void,
 ): Promise<QueryResult> {
   // adoptTurn mutates routing in place; keep the caller's batch route intact.
   routing = { ...routing };
@@ -417,19 +448,23 @@ export async function processQuery(
   // Where replies go is a property of the TURN, not the query. The query
   // stays open across turns (below), so a message pushed after the previous
   // answer finished is a new turn and replies go to ITS thread; a message
-  // pushed while an answer is still streaming waits its turn — the in-flight
-  // answer keeps the destination it started with. Pushed routes queue in
+  // queued while an answer is still streaming waits its turn — the in-flight
+  // answer keeps the destination it started with. A confirmed steer instead
+  // joins that answer's feedback targets and archive prompt. Queued routes stay in
   // push order (including retries) and advance at every result, mirroring
   // archivePrompts. An empty initial prompt (a pre-warmed query) starts idle.
   let answering = initialPrompt !== '';
+  let turnInputIds = [...initialBatchIds];
   type QueuedTurn = {
+    inputIds: string[];
     routing: RoutingContext;
     unwrappedNudged: boolean;
     taskBlockNudged: boolean;
   };
   const queuedTurns: QueuedTurn[] = [];
   const adoptTurn = (next: QueuedTurn): void => {
-    Object.assign(routing, next.routing);
+    routing = { ...next.routing };
+    turnInputIds = next.inputIds;
     unwrappedNudged = next.unwrappedNudged;
     taskBlockNudged = next.taskBlockNudged;
     publishReplyRoute(routing);
@@ -439,7 +474,7 @@ export async function processQuery(
   // Preserve its original route, prompt and retry guards until it is answered.
   const pushRetry = (prompt: string): void => {
     query.push(prompt);
-    queuedTurns.push({ routing: { ...routing }, unwrappedNudged, taskBlockNudged });
+    queuedTurns.push({ inputIds: [...turnInputIds], routing: { ...routing }, unwrappedNudged, taskBlockNudged });
     archivePrompts.push(archivePrompts[0] ?? initialPrompt);
   };
 
@@ -453,15 +488,16 @@ export async function processQuery(
   // claim age (see src/host-sweep.ts); if something is truly stuck, the host
   // will kill the container and messages get reset to pending.
   let pollInFlight = false;
+  let followUpPoll: Promise<void> = Promise.resolve();
   let endedForCommand = false;
   let mailboxFailureStreak = 0;
   const pollHandle = setInterval(() => {
     if (done || pollInFlight || endedForCommand) return;
     pollInFlight = true;
 
-    void (async () => {
+    followUpPoll = (async () => {
       try {
-        const pending = getPendingMessages();
+        const pending = getPendingMessages(false, answering);
 
         // Slash commands need a fresh query: /clear resets the SDK's
         // resume id (fixed at sdkQuery() time); admin/passthrough commands
@@ -494,14 +530,14 @@ export async function processQuery(
         // batch (mirrors the two-phase initial-batch selection in
         // db/messages-in.ts).
         const hasFollowUpTrigger = pending.some((m) => m.kind !== 'system' && m.trigger === 1);
-        const newMessages = pending.filter((m) => m.kind !== 'system' && (m.trigger === 1 || hasFollowUpTrigger));
+        let newMessages = pending.filter((m) => m.kind !== 'system' && (m.trigger === 1 || hasFollowUpTrigger));
         if (newMessages.length === 0) return;
 
         // Accumulated context must not engage a warm query by itself.
         if (!newMessages.some((m) => m.trigger === 1)) return;
 
-        const newIds = newMessages.map((m) => m.id);
-        markProcessing(newIds);
+        newMessages = claimMessages(newMessages);
+        if (!newMessages.length) return;
 
         // Run pre-task scripts on follow-ups too — without this, a task that
         // arrives during an active query (e.g. a */10 monitoring cron) bypasses
@@ -526,19 +562,33 @@ export async function processQuery(
         // claimed messages get released by the host's processing-claim sweep.
         if (done) return;
 
+        await transcribeDiscordAudio(keep, signal);
         const keptIds = keep.map((m) => m.id);
-        const prompt = formatMessages(keep);
+        const prompt = (await recallSupermemory(keep)) + formatMessages(keep);
+        if (done) return;
         log(`Pushing ${keep.length} follow-up message(s) into active query`);
-        query.push(prompt);
-        archivePrompts.push(prompt);
+        const delivery = await query.push(prompt);
         const next: QueuedTurn = {
+          inputIds: keptIds,
           routing: extractRouting(keep),
           unwrappedNudged: false,
           taskBlockNudged: false,
         };
-        if (answering) queuedTurns.push(next);
-        else adoptTurn(next);
-        markCompleted(keptIds);
+        if (delivery === 'steered') {
+          turnInputIds.push(...keptIds);
+          // This input belongs to the current answer, not a phantom next turn.
+          routing.feedbackTargets = [...(routing.feedbackTargets ?? []), ...(next.routing.feedbackTargets ?? [])];
+          archivePrompts[0] = [archivePrompts[0], prompt].filter(Boolean).join('\n');
+        } else {
+          archivePrompts.push(prompt);
+          if (answering) queuedTurns.push(next);
+          else {
+            adoptTurn(next);
+            if (!next.routing.feedbackTargets?.length) await publishAgentProgress(next.routing, 'received');
+          }
+        }
+        // Keep inputs claimed until their answer finishes, so host cancellation
+        // and crash recovery can still find accepted but unfinished follow-ups.
       } catch (err) {
         // Without this catch the rejection escapes the void IIFE and Node
         // terminates the container on unhandled-rejection. The initial-batch
@@ -575,6 +625,7 @@ export async function processQuery(
     for await (const event of query.events) {
       handleEvent(event, routing);
       touchHeartbeat();
+      if (event.type === 'tool') await publishAgentProgress(routing, 'tool', event);
 
       if (event.type === 'init') {
         queryContinuation = event.continuation;
@@ -599,15 +650,13 @@ export async function processQuery(
           midTurnTail = scan.tail;
         }
       } else if (event.type === 'result') {
-        // A result — with or without text — means the turn is done. Mark
-        // the initial batch completed now so the host sweep doesn't see
-        // stale 'processing' claims while the query stays open for
-        // follow-up pushes. The agent may have responded via MCP
-        // (send_message) mid-turn, or the message may not need a response
-        // at all — either way the turn is finished.
-        markCompleted(initialBatchIds);
+        // The app-server can complete a turn before replying to turn/steer.
+        // Settle input ownership before publishing feedback or the archive.
+        await followUpPoll;
         const resultText = event.text ?? '';
         const failed = event.isError === true;
+        let feedbackFinished = true;
+        let feedbackPhase: AgentProgress['phase'] = failed ? 'failed' : 'completed';
         if (resultText || failed) {
           const { hasUnwrapped, taskBlocks } = await dispatchResultText(resultText, routing, {
             midTurnSent,
@@ -649,6 +698,8 @@ export async function processQuery(
           // turn's mid-turn sent count. If a reply already went out as a
           // mid-turn block, the unwrapped tail stays in the scratchpad log.
           const willRetryWrapping = !failed && hasUnwrapped && !unwrappedNudged;
+          feedbackFinished = !willRetryWrapping && !willRetryTaskBlocks;
+          if (hasUnwrapped && !willRetryWrapping) feedbackPhase = 'failed';
           notifyExchangeComplete(onExchangeComplete, {
             prompt: archivePrompts[0] ?? initialPrompt,
             result: archivedResult,
@@ -677,6 +728,12 @@ export async function processQuery(
           // user prompt at their own position in the FIFO queue.
           archivePrompts.shift();
         } else archivePrompts.shift();
+        if (feedbackFinished) {
+          markCompleted(turnInputIds);
+          syncSupermemory();
+          await publishAgentProgress(routing, feedbackPhase);
+          if (feedbackPhase === 'completed') onReplyComplete?.();
+        }
         // Turn boundary: reset the per-turn sent count after the result's
         // nudge decision has used it. A nudge retry re-counts via its own
         // text events before the retry result, so resetting on every result
@@ -695,8 +752,8 @@ export async function processQuery(
       }
     }
   } catch (err) {
-    // Freeze the queue before awaiting notices. Follow-ups have already been
-    // acknowledged, so an abandoned queued turn cannot rely on redelivery.
+    // Freeze the queue before awaiting notices. Unfinished inputs remain
+    // claimed so the host can recover them after the runtime exits.
     done = true;
     const cancelled = endedForCommand || signal?.aborted;
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -742,6 +799,12 @@ export async function processQuery(
   } finally {
     done = true;
     clearInterval(pollHandle);
+    // A thrown error, cancellation or unexpectedly closed stream must not
+    // leave the user's in-progress reaction stuck forever.
+    const phase = endedForCommand || signal?.aborted ? 'cancelled' : 'failed';
+    for (const target of [...(answering ? [routing] : []), ...queuedTurns.map((turn) => turn.routing)]) {
+      await publishAgentProgress(target, phase);
+    }
   }
 
   return { continuation: queryContinuation };
@@ -756,6 +819,38 @@ function notifyExchangeComplete(
     hook(exchange);
   } catch (err) {
     log(`onExchangeComplete failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** UI feedback is durable mailbox traffic, separate from assistant replies. */
+async function publishAgentProgress(
+  routing: RoutingContext,
+  phase: AgentProgress['phase'],
+  tool?: { name: string; preview: string },
+): Promise<void> {
+  if (
+    routing.channelType !== 'discord' ||
+    routing.taskRun ||
+    (!routing.feedbackTargets?.length && !routing.threadId?.startsWith('discord:'))
+  )
+    return;
+  try {
+    await writeMessageOut({
+      id: generateId(),
+      in_reply_to: routing.inReplyTo,
+      kind: 'agent_progress',
+      platform_id: routing.platformId,
+      channel_type: routing.channelType,
+      thread_id: routing.threadId,
+      content: JSON.stringify({
+        phase,
+        targets: routing.feedbackTargets ?? [],
+        ...(tool ? { tool: { name: tool.name, preview: tool.preview } } : {}),
+      }),
+    });
+  } catch (err) {
+    // A failed status update must never interrupt the user's actual task.
+    log(`Progress publication failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -797,7 +892,12 @@ async function deliverErrorResult(routing: RoutingContext, text: string): Promis
     platform_id: routing.platformId,
     channel_type: routing.channelType,
     thread_id: routing.threadId,
-    content: JSON.stringify({ text: stripHarnessTagArtifacts(text), [FAILURE_NOTICE_FIELD]: true }),
+    content: JSON.stringify({
+      text: stripHarnessTagArtifacts(text),
+      [FAILURE_NOTICE_FIELD]: true,
+      ...(routing.channelType === 'discord' ? { needsInput: true } : {}),
+      replyTarget: routing.feedbackTargets?.[0],
+    }),
   });
 }
 
@@ -1233,7 +1333,12 @@ async function sendToDestination(dest: DestinationEntry, body: string, routing: 
     platform_id: platformId,
     channel_type: channelType,
     thread_id: destRouting?.threadId ?? null,
-    content: JSON.stringify({ text: body }),
+    content: JSON.stringify({
+      text: body,
+      ...(destRouting?.inReplyTo === routing.inReplyTo && routing.feedbackTargets?.[0]
+        ? { replyTarget: routing.feedbackTargets[0] }
+        : {}),
+    }),
   });
 }
 
@@ -1243,6 +1348,7 @@ function publishReplyRoute(routing: RoutingContext): void {
     routing.inReplyTo
       ? {
           inReplyTo: routing.inReplyTo,
+          ...(routing.feedbackTargets?.[0] ? { replyTarget: routing.feedbackTargets[0] } : {}),
           channelType: routing.channelType,
           platformId: routing.platformId,
           threadId: routing.threadId,

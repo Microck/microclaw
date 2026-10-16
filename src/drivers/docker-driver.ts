@@ -19,6 +19,7 @@
 import { createHash } from 'crypto';
 import fs from 'fs';
 import os from 'os';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { log } from '../log.js';
 
@@ -588,7 +589,7 @@ class DockerHandle implements SessionHandle {
     try {
       this.cli.run(['rm', '--force', this.name]);
     } catch (error) {
-      this.#confirmRemoved(this.name, error);
+      await this.#confirmRemoved(this.name, error);
     }
     for (const auxiliary of [...this.auxiliaryNames].reverse()) {
       try {
@@ -599,7 +600,7 @@ class DockerHandle implements SessionHandle {
       try {
         this.cli.run(['rm', '--force', auxiliary]);
       } catch (error) {
-        this.#confirmRemoved(auxiliary, error);
+        await this.#confirmRemoved(auxiliary, error);
       }
     }
     if (this.privateNetwork) {
@@ -611,15 +612,36 @@ class DockerHandle implements SessionHandle {
     }
   }
 
-  /** A successful daemon query distinguishes auto-removal from a daemon outage. */
-  #confirmRemoved(name: string, error: unknown): void {
-    try {
-      const remaining = this.cli.run(['ps', '-a', '--filter', `name=^/${name}$`, '--format', '{{.Names}}']);
-      if (!remaining.trim()) return;
-    } catch (probeError) {
-      throw normalizeDockerError(probeError);
+  /** --rm can still be removing when explicit rm runs. Await that teardown,
+   * while daemon failures and containers in any other state remain errors. */
+  async #confirmRemoved(name: string, error: unknown): Promise<void> {
+    const deadline = Date.now() + 5000;
+    const probe = (args: string[]): string => {
+      const timeoutMs = deadline - Date.now();
+      if (timeoutMs <= 0) throw normalizeDockerError(error);
+      try {
+        return this.cli.run(args, { timeoutMs }).trim();
+      } catch (probeError) {
+        throw normalizeDockerError(probeError);
+      }
+    };
+    const presence = () => probe(['ps', '-a', '--filter', `name=^/${name}$`, '--format', '{{.Names}}']);
+    while (true) {
+      if (!presence()) return;
+      let state: string;
+      try {
+        // List summaries report "dead" during --rm cleanup. Inspect owns the
+        // actual lifecycle state and reports "removing" until teardown ends.
+        state = probe(['inspect', '--format', '{{.State.Status}}', name]);
+      } catch (inspectError) {
+        // Removal can finish between listing and inspection. A successful,
+        // empty daemon query proves absence; outages still reject teardown.
+        if (!presence()) return;
+        throw inspectError;
+      }
+      if (state !== 'removing') throw normalizeDockerError(error);
+      await delay(50);
     }
-    throw normalizeDockerError(error);
   }
 
   /** `docker exec` against this session's container — see `SessionExecSpec`. */

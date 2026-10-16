@@ -27,6 +27,7 @@ import {
   type GatewayProviderDefinition,
 } from './gateway-providers/index.js';
 import { log } from './log.js';
+import { permitsSupermemoryRequest } from './supermemory.js';
 import { pickApprovalDelivery, pickApprover } from './modules/approvals/primitive.js';
 import { isAuthorizedApprovalClick } from './modules/approvals/response-handler.js';
 import { registerResponseHandler, type ResponsePayload } from './response-registry.js';
@@ -402,6 +403,8 @@ async function processGatewayRequest(
     }
     if (createdAtMs < startedAt && !approvalSource?.durable) return unavailableDecision();
     if (request.trigger === 'default' && request.destination && session) {
+      if (permitsSupermemoryRequest(agentGroup, request.destination))
+        return current() ? 'approve' : unavailableDecision();
       if (permitsConfiguredGatewayRead(request.destination)) return current() ? 'approve' : unavailableDecision();
       const config = await getContainerConfig(request.agentGroupId);
       const providerName = resolveProviderName(session.agent_provider, config?.provider);
@@ -745,6 +748,15 @@ function validateRequest(request: GatewayApprovalRequest): void {
   }
   if (request.destination?.sendsPayload !== undefined && typeof request.destination.sendsPayload !== 'boolean') {
     throw new Error('Gateway destination payload flag is invalid');
+  }
+  if (
+    request.destination?.path !== undefined &&
+    (typeof request.destination.path !== 'string' ||
+      request.destination.path.length > 240 ||
+      !request.destination.path.startsWith('/') ||
+      /[?#\r\n]/.test(request.destination.path))
+  ) {
+    throw new Error('Gateway destination path is invalid');
   }
   if (!request.id || request.id.length > 200) throw new Error('Gateway approval id is invalid');
   if (!request.agentGroupId || request.agentGroupId.length > 200) throw new Error('Gateway agent identity is invalid');

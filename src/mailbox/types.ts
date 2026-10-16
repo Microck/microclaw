@@ -5,6 +5,7 @@ import type {
   InboundWrite,
   OutboundDelivery,
   ProcessingAckRecord,
+  FeedbackTarget,
   SessionRoutingRecord,
   TaskRecord as CanonicalTaskRecord,
   TaskWrite,
@@ -91,11 +92,15 @@ export interface MailboxTimelineMessage {
 
 /** Host-visible inbound mailbox behavior. Storage layout and lifecycle are implementation-private. */
 export interface InboundMailbox {
+  getQueuedInputs(): Array<{ id: string; text: string }>;
+  updateQueuedInput(id: string, text: string | null): boolean;
   setRouting(routing: SessionRouting): void;
   replaceDestinations(entries: Destination[]): void;
   insertMessage(message: InboundMessage): Promise<void>;
   countDueMessages(): number;
   markMessageFailed(messageId: string): void;
+  /** Cancel conversation inputs through this instant, retaining history and returning reaction targets. */
+  cancelConversation(before: string): FeedbackTarget[];
   retryWithBackoff(messageId: string, backoffSec: number): void;
   getMessageForRetry(messageId: string, status: 'pending' | 'processing'): MessageRetry | undefined;
   applyProcessingAcks(acks: ProcessingAck[]): void;
@@ -134,6 +139,7 @@ export interface InboundMailbox {
 
 /** Host-visible outbound mailbox behavior. Storage layout and lifecycle are implementation-private. */
 export interface OutboundMailbox {
+  getProviderContinuation(provider: string): string | undefined;
   getTerminalProcessingAcks(): ProcessingAck[];
   getProcessingClaims(): ProcessingClaim[];
   deleteOrphanProcessingClaims(): number;

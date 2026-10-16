@@ -1,3 +1,4 @@
+import { SOURCE_DIR } from '../runtime-paths.js';
 import { renderMemorySection } from './context.js';
 
 const MEMORY_CONTEXT_SOURCES = ['startup', 'clear', 'compact'] as const;
@@ -12,7 +13,7 @@ export interface MemorySessionHookRegistration {
 }
 
 export const MEMORY_SESSION_HOOK: MemorySessionHookRegistration = {
-  command: 'bun /app/src/memory/hook.ts',
+  command: `bun ${SOURCE_DIR}/memory/hook.ts`,
   legacyCommands: ['bun /app/src/memory-hook.ts'],
   sources: MEMORY_CONTEXT_SOURCES,
 };

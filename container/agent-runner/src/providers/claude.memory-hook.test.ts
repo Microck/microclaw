@@ -60,7 +60,7 @@ describe('Claude memory SessionStart registration', () => {
       { matcher: '.*', hooks: [{ type: 'command', command: 'custom-start' }] },
       {
         matcher: 'startup|clear|compact',
-        hooks: [{ type: 'command', command: 'bun /app/src/memory/hook.ts', timeout: 10 }],
+        hooks: [{ type: 'command', command: MEMORY_SESSION_HOOK.command, timeout: 10 }],
       },
     ]);
   });

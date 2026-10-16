@@ -15,6 +15,7 @@
  * container.json is materialized, so none can arrive here.
  */
 import path from 'path';
+import { AGENT_DIR } from './runtime-paths.js';
 
 import type { McpServerConfig } from './providers/types.js';
 
@@ -24,10 +25,11 @@ function pluginDataDir(pluginRoot: string): string {
   return path.posix.join(groupDir, 'plugin-data', path.posix.basename(pluginRoot));
 }
 
-export function resolvePluginServer(config: McpServerConfig): McpServerConfig {
+export function resolvePluginServer(config: McpServerConfig, agentDir = AGENT_DIR): McpServerConfig {
   if (config.type === 'http') return config;
-  const { pluginRoot, ...server } = config;
-  if (!pluginRoot) return config;
+  const { pluginRoot: configuredRoot, ...server } = config;
+  if (!configuredRoot) return config;
+  const pluginRoot = path.join(agentDir, 'plugins', path.basename(configuredRoot));
 
   const pluginData = pluginDataDir(pluginRoot);
   // Both replacement values are fixed container paths with no placeholders in

@@ -58,11 +58,11 @@ function gitEnv(): NodeJS.ProcessEnv {
   };
 }
 
-/** The pathspecs of SKILL.md's `git archive "$upstream_ref" … | tar -x -C "$controller_dir"`. */
+/** The pathspecs of SKILL.md's `git archive HEAD … | tar -x -C "$controller_dir"`. */
 function archivedPaths(): string[] {
   const match = fs
     .readFileSync(SKILL, 'utf8')
-    .match(/^git archive "\$upstream_ref" (.+?) \| tar -x -C "\$controller_dir"$/m);
+    .match(/^git archive HEAD (.+?) \| tar -x -C "\$controller_dir"$/m);
   if (!match) throw new Error('SKILL.md no longer contains the controller archive command');
   return match[1].trim().split(/\s+/);
 }

@@ -254,7 +254,12 @@ export class IronProxyApprovalBridge {
       id,
       trigger: 'default',
       // Methods are case-sensitive upstream, so policy sees the one the front will forward.
-      destination: { host: request.host, method: request.rawMethod, sendsPayload: sendsPayload(call.metadata) },
+      destination: {
+        host: request.host,
+        method: request.rawMethod,
+        path: request.path,
+        sendsPayload: sendsPayload(call.metadata),
+      },
       agentGroupId: identity.agentGroupId,
       sessionId: identity.sessionId,
       runtimeIdentity: identity.runtimeIdentity,

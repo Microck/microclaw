@@ -1,0 +1,13 @@
+# Publishing MicroClaw
+
+The public branch starts with upstream history and an audited snapshot of the customized code. Private local commit history is not published. Installation state, credentials, conversations, agent instructions and private skills stay local. The personal `docs/hermes-migration.md` operator runbook is excluded from publication.
+
+A systemd user timer checks every 15 minutes. It publishes committed local source changes and merges the newest stable upstream release. It does not commit unfinished edits, follow upstream development commits or update the running assistant. Live upgrades still use the existing safe updater.
+
+The publisher runs in a separate checkout. It applies only the change since the last published local source commit, so upstream updates on the public branch are preserved. Conflicts, secret-scan findings or failed checks stop the push. The live checkout and service are never changed. A commit trailer on public main records the last exported source commit. The publisher requires that audited baseline instead of guessing.
+
+Before pushing, the publisher scans tracked files with Gitleaks, checks both TypeScript projects and runs both test suites using frozen lockfiles in a disposable Raft workspace. It also runs formatting and lint checks. Only audited source is uploaded, and the workspace is destroyed after success or failure. A push never forces the public branch. Concurrent edits to GitHub cause a rejected push and are retried from the new public head next time. Successful pushes trigger normal GitHub CI.
+
+The host needs Python 3, Jujutsu, Git, Gitleaks, Raft with a configured Linux host, and GitHub push access. The Raft image supplies Node, pnpm and Bun. The private configuration JSON provides `source`, `source_revision`, `checkout` and `validation_location`. Only commits selected by `source_revision` are eligible. The installed timer follows the `custom/glados` bookmark. The checkout must have `origin` pointing at the public repository, `upstream` pointing at NanoClaw, and `source` pointing at the private local repository. Run `python3 scripts/publish-microclaw.py CONFIG.json` to check and publish. Service configuration and state must stay outside the public repository.
+
+Check `systemctl --user status microclaw-publish.timer` and `journalctl --user -u microclaw-publish.service` for publication status. A failed run leaves public main unchanged. Resolve a reported conflict or failed check before expecting a new version. Stop automatic publication with `systemctl --user disable --now microclaw-publish.timer`.

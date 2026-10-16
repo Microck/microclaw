@@ -26,6 +26,7 @@ import {
   findSession,
   getSessionsByAgentGroup,
   getActiveSessions,
+  getSessionsForPolling,
   getRunningSessions,
   updateSession,
   deleteSession,
@@ -375,6 +376,16 @@ describe('sessions', () => {
     await createSession(sess());
     await createSession({ ...sess(), id: 'sess-closed', status: 'closed', thread_id: 'thread-x' });
     expect(await getActiveSessions()).toHaveLength(1);
+  });
+
+  it('polls task and used chat sessions while retaining empty thread engagement records', async () => {
+    await createSession(sess());
+    await createSession({ ...sess(), id: 'task', messaging_group_id: null, thread_id: 'system:tasks:proof' });
+    await createSession({ ...sess(), id: 'used', thread_id: 'used-thread', last_active: now() });
+    expect((await getSessionsForPolling()).map((row) => row.id).sort()).toEqual(['task', 'used']);
+    expect((await findSession('mg-1', null))?.id).toBe('sess-1');
+    await updateSession('sess-1', { last_active: now() });
+    expect(await getSessionsForPolling()).toHaveLength(3);
   });
 
   it('should list running sessions', async () => {

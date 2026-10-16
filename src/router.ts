@@ -17,9 +17,11 @@
  * drops (no agent wired, no trigger match); the access gate writes rows
  * for policy refusals.
  */
-import { getChannelAdapter, getChannelDefaults } from './channels/channel-registry.js';
+import { getChannelAdapter, getChannelAdapterExact, getChannelDefaults } from './channels/channel-registry.js';
 import { resolveThreadPolicy, resolveUnknownSenderPolicy } from './channels/channel-defaults.js';
 import { gateCommand } from './command-gate.js';
+import { commandText } from './slash-command.js';
+import { isContainerRunning, killContainer } from './container-runner.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { recordDroppedMessage } from './db/dropped-messages.js';
 import {
@@ -31,7 +33,12 @@ import { findSessionForAgent } from './db/sessions.js';
 import { backfillSession, fanInboundMessage } from './modules/cross-session-context/index.js';
 import { startTypingRefresh, stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
-import { resolveSession, writeSessionMessage, writeOutboundDirect } from './session-manager.js';
+import {
+  resolveSession,
+  writeSessionMessage,
+  writeOutboundDirect,
+  withExistingMailboxSession,
+} from './session-manager.js';
 import { requestWake } from './request-wake.js';
 import { getSession } from './db/sessions.js';
 import type { AgentGroup, MessagingGroup, MessagingGroupAgent, Session } from './types.js';
@@ -554,6 +561,52 @@ async function deliverToAgent(
     threadId: effectiveThreadId,
   };
 
+  // This runs only after the normal sender/access gates. Stop is host control,
+  // never a model prompt, and tears down tools along with the active container.
+  if (
+    wake &&
+    (event.message.kind === 'chat' || event.message.kind === 'chat-sdk') &&
+    /^(?:stop|\/stop)$/i.test(commandText(event.message.content))
+  ) {
+    const before = new Date().toISOString();
+    // Cancel admission before teardown: the native exit path releases its
+    // runtime claim before finishing gateway cleanup. Pending inputs must
+    // already be terminal when another sweep can consider waking this session.
+    const targets = await withExistingMailboxSession(session.agent_group_id, session.id, (mailbox) =>
+      mailbox.cancelConversation(before),
+    );
+    const { withSessionDeliveryPaused, deliverSessionMessages } = await import('./delivery.js');
+    // Start termination immediately; delivery coordination must not delay it
+    // behind a channel request that is already in flight.
+    const stopped = isContainerRunning(session.id)
+      ? new Promise<void>((resolve) => killContainer(session.id, 'user-stop', resolve))
+      : Promise.resolve();
+    await withSessionDeliveryPaused(session.id, async () => {
+      await stopped;
+      await withExistingMailboxSession(session.agent_group_id, session.id, async (mailbox) => {
+        for (const message of mailbox.getDueMessages(mailbox.getDeliveredIds())) mailbox.markDeliveryFailed(message.id);
+        if (targets?.length)
+          await mailbox.writeDirect({
+            id: generateId(),
+            kind: 'agent_progress',
+            ...deliveryAddr,
+            content: JSON.stringify({ phase: 'cancelled', targets }),
+          });
+      });
+      await writeOutboundDirect(session.agent_group_id, session.id, {
+        id: generateId(),
+        kind: 'chat',
+        ...deliveryAddr,
+        content: JSON.stringify({ text: 'Stopped.' }),
+      });
+    });
+    stopTypingRefresh(session.id);
+    // A stopped session leaves the active delivery poll. Flush its control
+    // response now instead of waiting for the one-minute inactive sweep.
+    await deliverSessionMessages(session);
+    return;
+  }
+
   // Command gate: classify slash commands before they reach the container.
   // Filtered commands are dropped silently. Denied admin commands get a
   // permission-denied response written directly to messages_out.
@@ -587,17 +640,40 @@ async function deliverToAgent(
     await backfillSession(agentGroup, session, mg, { created });
   }
 
+  // Await the acknowledgement before exposing this message to a warm runner,
+  // otherwise a fast completion can race a late 👀 reaction.
+  const feedbackTarget =
+    wake && event.channelType === 'discord' ? JSON.parse(event.message.content)?.feedbackTarget : undefined;
+  const feedbackAdapter = feedbackTarget ? getChannelAdapterExact(event.instance ?? event.channelType) : undefined;
+  const react = async (phase: 'received' | 'failed'): Promise<void> => {
+    if (!feedbackTarget) return;
+    try {
+      await feedbackAdapter?.deliver(event.platformId, effectiveThreadId, {
+        kind: 'agent_progress',
+        content: { phase, targets: [feedbackTarget] },
+      });
+    } catch (err) {
+      log.warn('Processing reaction failed', { sessionId: session.id, err });
+    }
+  };
+  await react('received');
+
   const messageId = messageIdForAgent(event.message.id, agent.agent_group_id);
-  await writeSessionMessage(session.agent_group_id, session.id, {
-    id: messageId,
-    kind: event.message.kind,
-    timestamp: event.message.timestamp,
-    platformId: deliveryAddr.platformId,
-    channelType: deliveryAddr.channelType,
-    threadId: deliveryAddr.threadId,
-    content: event.message.content,
-    trigger: wake,
-  });
+  try {
+    await writeSessionMessage(session.agent_group_id, session.id, {
+      id: messageId,
+      kind: event.message.kind,
+      timestamp: event.message.timestamp,
+      platformId: deliveryAddr.platformId,
+      channelType: deliveryAddr.channelType,
+      threadId: deliveryAddr.threadId,
+      content: event.message.content,
+      trigger: wake,
+    });
+  } catch (err) {
+    await react('failed');
+    throw err;
+  }
 
   if (wake && created) {
     // A brand-new engaged session: notify registered modules with the

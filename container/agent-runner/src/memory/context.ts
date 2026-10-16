@@ -1,3 +1,4 @@
+import { AGENT_DIR } from '../runtime-paths.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -8,7 +9,7 @@ export const MEMORY_TRUNCATION_NOTICE = '[truncated: slim this file and move det
  * Render the two always-loaded memory files inside the container. Host-side
  * composers never read agent-controlled memory.
  */
-export function renderMemorySection(baseDir = '/workspace/agent'): string {
+export function renderMemorySection(baseDir = AGENT_DIR): string {
   const memoryDir = path.join(baseDir, 'memory');
   const index = readMemoryFile(path.join(memoryDir, 'index.md'));
   const definition = readMemoryFile(path.join(memoryDir, 'system', 'definition.md'));
@@ -18,8 +19,8 @@ export function renderMemorySection(baseDir = '/workspace/agent'): string {
     '',
     'These files are loaded at startup, after clear, and after compaction:',
     '',
-    '- `/workspace/agent/memory/index.md` - top-level memory index and Core Memory',
-    '- `/workspace/agent/memory/system/definition.md` - memory system behavior',
+    `- \`${baseDir}/memory/index.md\` - top-level memory index and Core Memory`,
+    `- \`${baseDir}/memory/system/definition.md\` - memory system behavior`,
     '',
     'The files on disk are authoritative. Edit them directly; follow links from',
     'the index when more detail is relevant.',

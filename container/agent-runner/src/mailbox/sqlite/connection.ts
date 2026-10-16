@@ -1,3 +1,4 @@
+import { SESSION_DIR } from '../../runtime-paths.js';
 /**
  * Two-DB connection layer.
  *
@@ -19,8 +20,8 @@
  */
 import { Database } from 'bun:sqlite';
 
-const DEFAULT_INBOUND_PATH = '/workspace/inbound.db';
-const DEFAULT_OUTBOUND_PATH = '/workspace/outbound.db';
+const DEFAULT_INBOUND_PATH = `${SESSION_DIR}/inbound.db`;
+const DEFAULT_OUTBOUND_PATH = `${SESSION_DIR}/outbound.db`;
 
 let _inbound: Database | null = null;
 let _outbound: Database | null = null;

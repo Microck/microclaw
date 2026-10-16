@@ -1,0 +1,13 @@
+[
+  "container/agent-runner/src/providers/codex-app-server.test.ts",
+  "container/agent-runner/src/providers/codex-app-server.ts",
+  "container/agent-runner/src/providers/codex.ts",
+  "container/agent-runner/src/providers/codex.turns.test.ts",
+  "src/channels/discord.ts",
+  "src/gateway-providers/iron-proxy-approval.test.ts",
+  "src/gateway-providers/iron-proxy-approval.ts",
+  "src/gateway-providers/iron-proxy.ts",
+  "src/provider-contracts/codex.ts",
+  "src/providers/codex-agents-md.test.ts",
+  "src/providers/codex-agents-md.ts"
+]

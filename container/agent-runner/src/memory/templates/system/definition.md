@@ -14,7 +14,7 @@ shape would remember or retrieve better.
 created: at startup, after clear, and after compaction. Keep both lean: headlines and
 pointers here, detail in linked files. Core Memory in the index should only hold
 durable facts relevant in nearly every conversation; behavior, role,
-and persona belong in `/workspace/agent/instructions.prepend.md`.
+and persona belong in `instructions.prepend.md` in the agent workspace.
 
 ## Open Knowledge Format
 

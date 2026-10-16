@@ -25,6 +25,8 @@ export interface GatewayContribution {
 }
 
 export interface GatewaySessionInput {
+  /** Resolved by the gateway for a native caller, never a credential. */
+  hostGatewayEndpoint?: string;
   key: SessionKey;
   /** Adoption must never provision replacement identity for a surviving runtime. */
   disposition?: 'create' | 'adopt';
@@ -80,6 +82,8 @@ export interface GatewayApprovalRequest {
     method?: string;
     /** Adapter-attested; false only when the request has no body and asks for no protocol upgrade. */
     sendsPayload?: boolean;
+    /** Gateway-attested request pathname, excluding query strings and fragments. */
+    path?: string;
   };
   /** Selected, bounded display fields may come from the request. Never pass raw bodies, headers, tokens or query strings. */
   summary?: {

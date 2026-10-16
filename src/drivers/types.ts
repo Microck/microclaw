@@ -146,7 +146,9 @@ export interface SessionSpec {
   /** Named, versioned posture. Drivers map it; raw flags never cross the seam. */
   hardening: 'standard';
   resources: SessionResources;
-  runtimeTier: 'container' | 'vm';
+  runtimeTier: 'container' | 'vm' | 'host';
+  /** Fully resolved native process, present only for explicitly selected host execution. */
+  hostProcess?: { command: string; args: string[]; cwd: string; env: Record<string, string> };
   /**
    * uid:gid the containers run as. Docker papers over an image/host uid mismatch
    * with `--user`; not every realization has such a default, so the identity
@@ -260,9 +262,11 @@ export interface SessionHandle {
 }
 
 export interface DriverCapabilities {
-  isolationTiers: ('container' | 'vm')[];
+  isolationTiers: ('container' | 'vm' | 'host')[];
+  /** Native execution has no filesystem or network sandbox. */
+  hostExecution?: boolean;
   admissionEnforced: boolean;
-  networkPolicy: 'topology' | 'declarative';
+  networkPolicy: 'topology' | 'declarative' | 'none';
   encryptedVolumes: boolean;
   /**
    * Spec fields this driver cannot realize, named honestly rather than faked.

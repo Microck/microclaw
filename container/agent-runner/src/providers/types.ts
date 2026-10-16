@@ -104,6 +104,9 @@ export interface QueryInput {
    */
   continuation?: string;
 
+  /** Fork stored history into a new provider session on its first query. */
+  forkContinuation?: string;
+
   /** Working directory inside the container. */
   cwd: string;
 
@@ -140,8 +143,8 @@ export type McpServerConfig =
   | { type: 'http'; url: string; headers?: Record<string, string> };
 
 export interface AgentQuery {
-  /** Push a follow-up message into the active query. */
-  push(message: string): void;
+  /** Queue a follow-up, or report when the provider instead steers the active turn. */
+  push(message: string): void | Promise<'steered' | 'queued'>;
 
   /** Signal that no more input will be sent. */
   end(): void;
@@ -176,6 +179,7 @@ export type ProviderEvent =
   | { type: 'text'; text: string }
   | { type: 'error'; message: string; retryable: boolean; classification?: string }
   | { type: 'progress'; message: string }
+  | { type: 'tool'; name: string; preview: string }
   | { type: 'file'; path: string }
   /**
    * Liveness signal. Providers MUST yield this on every underlying SDK

@@ -336,6 +336,8 @@ export interface ChatSdkBridgeConfig {
   concurrency?: ConcurrencyStrategy;
   /** Bot token for authenticating forwarded Gateway events (required for interaction handling). */
   botToken?: string;
+  /** Host-authorized application commands, before the shared approval-button handler. */
+  handleGatewayInteraction?: (interaction: Record<string, unknown>) => Promise<boolean>;
   /** Platform-specific reply context extraction. */
   extractReplyContext?: ReplyContextExtractor;
   /**
@@ -458,6 +460,26 @@ export function appendRawText(
   serialized.text = text ? `${text}\n\n${extra}` : extra;
 }
 
+/** Bound URL-only Discord downloads before buffering or base64 expansion. */
+export async function readAttachmentBytes(response: Response, maxBytes: number): Promise<Buffer> {
+  if (!response.body) throw new Error('Attachment response has no body');
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return Buffer.concat(chunks, size);
+      size += value.byteLength;
+      if (size > maxBytes) throw new Error('Discord attachments exceed the 20 MiB message limit');
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel();
+    reader.releaseLock();
+  }
+}
+
 export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter {
   const { adapter } = config;
   // The instance name becomes a webhook route segment (the route regex is
@@ -493,6 +515,7 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
     // Download attachment data before serialization loses fetchData()
     if (message.attachments && message.attachments.length > 0) {
       const enriched = [];
+      let remainingBytes = 20 * 1024 * 1024;
       for (const att of message.attachments) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const entry: Record<string, any> = {
@@ -503,13 +526,28 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
           width: (att as unknown as Record<string, unknown>).width,
           height: (att as unknown as Record<string, unknown>).height,
         };
-        if (att.fetchData) {
-          try {
-            const buffer = await att.fetchData();
-            entry.data = buffer.toString('base64');
-          } catch (err) {
-            log.warn('Failed to download attachment', { type: att.type, err });
+        try {
+          if (att.fetchData) {
+            entry.data = (await att.fetchData()).toString('base64');
+          } else if (adapter.name === 'discord' && att.url) {
+            // Discord's forwarded Gateway messages expose CDN URLs without
+            // fetchData(). Download here before serialization drops the URL.
+            const url = new URL(att.url);
+            if (url.protocol !== 'https:' || !['cdn.discordapp.com', 'media.discordapp.net'].includes(url.hostname)) {
+              throw new Error('Unexpected Discord attachment origin');
+            }
+            const response = await fetch(url, {
+              headers: { 'User-Agent': 'OpenAI File Downloader, XaiImageApiFetch/1.0' },
+              signal: AbortSignal.timeout(30_000),
+              redirect: 'error',
+            });
+            if (!response.ok) throw new Error(`Discord attachment HTTP ${response.status}`);
+            const bytes = await readAttachmentBytes(response, remainingBytes);
+            remainingBytes -= bytes.byteLength;
+            entry.data = bytes.toString('base64');
           }
+        } catch (err) {
+          log.warn('Failed to download attachment', { type: att.type, err });
         }
         enriched.push(entry);
       }
@@ -537,6 +575,24 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
       serialized.senderId = author.userId;
       serialized.sender = name;
       serialized.senderName = name;
+    }
+
+    // A mention can open a new reply thread, but reactions still belong on
+    // the original parent-channel message. Preserve its address before raw drops.
+    if (adapter.name === 'discord') {
+      const raw = message.raw as { channel_id?: string; guild_id?: string; initial_thread_name?: string } | undefined;
+      if (
+        raw?.guild_id &&
+        raw.channel_id !== message.threadId.split(':').at(-1) &&
+        message.threadId.split(':').at(-1) === message.id &&
+        raw.initial_thread_name
+      )
+        serialized.generateThreadTitle = raw.initial_thread_name;
+      if (raw?.channel_id)
+        serialized.feedbackTarget = {
+          platformId: `discord:${raw.guild_id || '@me'}:${raw.channel_id}`,
+          messageId: message.id,
+        };
     }
 
     // Drop raw to save DB space (can be very large)
@@ -746,7 +802,12 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         gatewayAbort = new AbortController();
 
         // Start local HTTP server to receive forwarded Gateway events (including interactions)
-        const webhookUrl = await startLocalWebhookServer(gatewayAdapter, setupConfig, config.botToken);
+        const webhookUrl = await startLocalWebhookServer(
+          gatewayAdapter,
+          setupConfig,
+          config.botToken,
+          config.handleGatewayInteraction,
+        );
 
         // Exponential backoff capped at 1h. Without this, an unrecoverable
         // failure (e.g., TokenInvalid) restarts ~10×/sec and Discord's
@@ -1052,6 +1113,7 @@ function startLocalWebhookServer(
   adapter: GatewayAdapter,
   setupConfig: ChannelSetup,
   botToken?: string,
+  handleInteraction?: (interaction: Record<string, unknown>) => Promise<boolean>,
 ): Promise<string> {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
@@ -1064,7 +1126,7 @@ function startLocalWebhookServer(
       req.on('data', (chunk: Buffer) => chunks.push(chunk));
       req.on('end', () => {
         const body = Buffer.concat(chunks).toString();
-        handleForwardedEvent(body, adapter, setupConfig, botToken)
+        handleForwardedEvent(body, adapter, setupConfig, botToken, handleInteraction)
           .then(() => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end('{"ok":true}');
@@ -1098,6 +1160,7 @@ async function handleForwardedEvent(
   adapter: GatewayAdapter,
   setupConfig: ChannelSetup,
   botToken?: string,
+  handleInteraction?: (interaction: Record<string, unknown>) => Promise<boolean>,
 ): Promise<void> {
   let event: { type: string; data: Record<string, unknown> };
   try {
@@ -1109,6 +1172,7 @@ async function handleForwardedEvent(
   // Handle interaction events (button clicks) — not handled by adapter's handleForwardedGatewayEvent
   if (event.type === 'GATEWAY_INTERACTION_CREATE' && event.data) {
     const interaction = event.data;
+    if (await handleInteraction?.(interaction)) return;
     // type 3 = MessageComponent (button/select)
     if (interaction.type === 3) {
       const customId = (interaction.data as Record<string, unknown>)?.custom_id as string;

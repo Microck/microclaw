@@ -1,3 +1,4 @@
+import { AGENT_DIR, SESSION_DIR } from '../runtime-paths.js';
 /**
  * Core MCP tools: send_message, send_file, edit_message, add_reaction.
  *
@@ -11,7 +12,7 @@ import path from 'path';
 
 import { findByName, getAllDestinations } from '../destinations.js';
 import { getMessageIdBySeq, getRoutingBySeq, writeMessageOut } from '../db/messages-out.js';
-import { getCurrentInReplyTo, getCurrentReplyRoute } from '../db/session-state.js';
+import { getCurrentInReplyTo, getCurrentReplyRoute, type ReplyRoute } from '../db/session-state.js';
 import { resolveDestinationThread } from '../db/session-routing.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
@@ -46,17 +47,24 @@ function destinationList(): string {
  * came from that channel, else that channel's latest inbound thread. An agent
  * destination never carries a thread.
  */
-function resolveRouting(
-  to: string,
-): { channel_type: string; platform_id: string; thread_id: string | null; resolvedName: string } | { error: string } {
+function resolveRouting(to: string):
+  | {
+      channel_type: string;
+      platform_id: string;
+      thread_id: string | null;
+      resolvedName: string;
+      replyTarget?: ReplyRoute['replyTarget'];
+    }
+  | { error: string } {
   const dest = findByName(to);
   if (!dest) return { error: `Unknown destination "${to}". Known: ${destinationList()}` };
   if (dest.type === 'channel') {
+    const source = resolveDestinationThread(dest.channelType!, dest.platformId!, getCurrentReplyRoute());
     return {
       channel_type: dest.channelType!,
       platform_id: dest.platformId!,
-      thread_id:
-        resolveDestinationThread(dest.channelType!, dest.platformId!, getCurrentReplyRoute())?.threadId ?? null,
+      thread_id: source?.threadId ?? null,
+      ...(source?.replyTarget ? { replyTarget: source.replyTarget } : {}),
       resolvedName: to,
     };
   }
@@ -75,6 +83,11 @@ export const sendMessage: McpToolDefinition = {
           description: 'Destination name (e.g., "family", "worker-1").',
         },
         text: { type: 'string', description: 'Message content' },
+        needs_input: {
+          type: 'boolean',
+          description:
+            'True only when blocked on a concrete user answer, approval, credentials or action. Not for successful completion or optional offers.',
+        },
       },
       required: ['to', 'text'],
     },
@@ -96,7 +109,11 @@ export const sendMessage: McpToolDefinition = {
       platform_id: routing.platform_id,
       channel_type: routing.channel_type,
       thread_id: routing.thread_id,
-      content: JSON.stringify({ text }),
+      content: JSON.stringify({
+        text,
+        needsInput: args.needs_input === true,
+        ...(routing.replyTarget ? { replyTarget: routing.replyTarget } : {}),
+      }),
     });
 
     log(`send_message: #${seq} → ${routing.resolvedName}`);
@@ -128,13 +145,13 @@ export const sendFile: McpToolDefinition = {
     const routing = resolveRouting(to);
     if ('error' in routing) return err(routing.error);
 
-    const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve('/workspace/agent', filePath);
+    const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve(AGENT_DIR, filePath);
     if (!fs.existsSync(resolvedPath)) return err(`File not found: ${filePath}`);
 
     const id = generateId();
     const filename = (args.filename as string) || path.basename(resolvedPath);
 
-    const outboxDir = path.join('/workspace/outbox', id);
+    const outboxDir = path.join(SESSION_DIR, 'outbox', id);
     fs.mkdirSync(outboxDir, { recursive: true });
     fs.copyFileSync(resolvedPath, path.join(outboxDir, filename));
 
@@ -145,7 +162,11 @@ export const sendFile: McpToolDefinition = {
       platform_id: routing.platform_id,
       channel_type: routing.channel_type,
       thread_id: routing.thread_id,
-      content: JSON.stringify({ text: (args.text as string) || '', files: [filename] }),
+      content: JSON.stringify({
+        text: (args.text as string) || '',
+        files: [filename],
+        ...(routing.replyTarget ? { replyTarget: routing.replyTarget } : {}),
+      }),
     });
 
     log(`send_file: ${id} → ${routing.resolvedName} (${filename})`);

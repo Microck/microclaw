@@ -1,6 +1,7 @@
+import { SESSION_CONTEXT_PATH } from '../runtime-paths.js';
 import type { AgentMailbox, AgentMailboxFactory } from './types.js';
 
-const SESSION_CONTEXT = '/app/.nanoclaw-session.json';
+const SESSION_CONTEXT = SESSION_CONTEXT_PATH;
 
 let active: AgentMailbox | undefined;
 let factory: AgentMailboxFactory | undefined;

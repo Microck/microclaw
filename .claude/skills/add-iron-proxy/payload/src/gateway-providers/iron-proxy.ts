@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
+import net from 'node:net';
 import path from 'node:path';
 
 import { stringify as stringifyYaml } from 'yaml';
@@ -245,12 +246,19 @@ export function ironFrontConfig(settings: IronProxySettings): string {
  * test that stubs that module.
  */
 function centralContainerRunning(containerName: string): Promise<boolean> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     execFile(
       CONTAINER_RUNTIME_BIN,
       ['inspect', '-f', '{{.State.Running}}', containerName],
       { encoding: 'utf8', timeout: 5_000 },
-      (err, stdout) => resolve(!err && stdout.trim() === 'true'),
+      (err, stdout) => {
+        // An inconclusive probe is not evidence that the proxy stopped. The
+        // gateway itself still enforces credentials and destination policy.
+        if (err) reject(err);
+        else if (stdout.trim() === 'true') resolve(true);
+        else if (stdout.trim() === 'false') resolve(false);
+        else reject(new Error(`Invalid Iron proxy running state: ${JSON.stringify(stdout.trim())}`));
+      },
     );
   });
 }
@@ -341,7 +349,11 @@ function codexAuthMount(
 
 export function ironProxyContribution(settings: IronProxySettings, input: GatewaySessionInput): GatewayContribution {
   const token = signedWorkloadToken(input.runtimeIdentity, fs.readFileSync(settings.identityKey));
-  const proxy = `http://workload:${encodeURIComponent(token)}@${PROXY_HOST}:${settings.port}`;
+  const native = input.capabilities.hostExecution;
+  const proxyHost = native ? input.hostGatewayEndpoint : PROXY_HOST;
+  if (!proxyHost) throw new Error('Native gateway endpoint was not resolved');
+  const caPath = native ? settings.agentCaCert : AGENT_CA_PATH;
+  const proxy = `http://workload:${encodeURIComponent(token)}@${proxyHost}:${settings.port}`;
   return {
     env: {
       HTTP_PROXY: proxy,
@@ -350,10 +362,10 @@ export function ironProxyContribution(settings: IronProxySettings, input: Gatewa
       https_proxy: proxy,
       NO_PROXY: 'localhost,127.0.0.1,::1',
       no_proxy: 'localhost,127.0.0.1,::1',
-      NODE_EXTRA_CA_CERTS: AGENT_CA_PATH,
-      SSL_CERT_FILE: AGENT_CA_PATH,
-      CURL_CA_BUNDLE: AGENT_CA_PATH,
-      GIT_SSL_CAINFO: AGENT_CA_PATH,
+      NODE_EXTRA_CA_CERTS: caPath,
+      SSL_CERT_FILE: caPath,
+      CURL_CA_BUNDLE: caPath,
+      GIT_SSL_CAINFO: caPath,
       [settings.authEnv]: PLACEHOLDER,
       ...(settings.anthropicBaseUrl ? { ANTHROPIC_BASE_URL: settings.anthropicBaseUrl } : {}),
     },
@@ -369,6 +381,45 @@ export function ironProxyContribution(settings: IronProxySettings, input: Gatewa
     ],
     networkAccess: { endpoint: PROXY_HOST, target: { kind: 'runtime', identity: settings.containerName } },
   };
+}
+
+/** Resolve the managed proxy's routable bridge address for native host callers. */
+async function nativeProxyEndpoint(settings: IronProxySettings): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      CONTAINER_RUNTIME_BIN,
+      ['inspect', '-f', '{{json .}}', settings.containerName],
+      { timeout: 10_000 },
+      (error, stdout) => {
+        if (error) return reject(error);
+        try {
+          const container = JSON.parse(stdout);
+          const address = container.NetworkSettings.Networks[container.HostConfig.NetworkMode]?.IPAddress;
+          if (typeof address !== 'string' || !/^\d{1,3}(\.\d{1,3}){3}$/.test(address))
+            throw new Error('Iron proxy has no address on its configured primary network');
+          resolve(address);
+        } catch (parseError) {
+          reject(parseError);
+        }
+      },
+    );
+  });
+}
+
+/** A running Docker container may still be waiting for Iron's backend/configuration. */
+export function assertProxyListening(host: string, port: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host, port });
+    socket.setTimeout(1_500);
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve();
+    });
+    socket.once('error', (cause) => {
+      reject(new Error('Credential gateway is not accepting connections yet; message remains queued', { cause }));
+    });
+    socket.once('timeout', () => socket.destroy(new Error('Credential gateway connection timed out')));
+  });
 }
 
 interface LiveLease extends IronApprovalIdentity {
@@ -456,6 +507,12 @@ export function defineIronProxyProvider(initialSettings?: IronProxySettings): Ga
     const configured = currentSettings();
     await currentBridge().ready();
     await assertReady(configured);
+    let resolvedInput = input;
+    if (input.capabilities.hostExecution) {
+      const hostGatewayEndpoint = await nativeProxyEndpoint(configured);
+      await assertProxyListening(hostGatewayEndpoint, configured.port);
+      resolvedInput = { ...input, hostGatewayEndpoint };
+    }
     const lease: LiveLease = {
       runtimeIdentity: input.runtimeIdentity,
       sessionId: input.key.sessionId,
@@ -476,7 +533,7 @@ export function defineIronProxyProvider(initialSettings?: IronProxySettings): Ga
     if (signal.aborted) close();
     else signal.addEventListener('abort', close, { once: true });
     return {
-      contribution: ironProxyContribution(configured, input),
+      contribution: ironProxyContribution(configured, resolvedInput),
       onUnavailable(report) {
         lease.notify = report;
         if (lease.unavailable) report(lease.unavailable);

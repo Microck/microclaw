@@ -1,0 +1,19 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Reviewed public upstream test fixtures, parser syntax and public PostHog project key"
+regexTarget = "secret"
+regexes = [
+  '''^0123456789abcdef$''',
+  '''^123456789012345678$''',
+  '''^Qm9vdHN0cmFwVG9r\+ZW5WYWx1ZUhlcmUx/MjM0NTY3ODkw==$''',
+  '''^dGhlIHNhbXBsZSBub25jZQ==$''',
+  '''^eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0$''',
+  '''^owner_handle=\.owner\.id$''',
+  '''^phc_fx1Hhx9ucz8GuaJC8LVZWO8u03yXZZJJ6ObS4yplnaP$''',
+  '''^sk\-abc123def456$''',
+  '''^sk\-live\-1234567890$''',
+  '''^sk\-live\-abc123$''',
+]
+paths = ['''(^|/)\.gitleaks\.toml$''']

@@ -48,6 +48,7 @@ export {
   findSessionByAgentGroup,
   getSessionsByAgentGroup,
   getActiveSessions,
+  getSessionsForPolling,
   getRunningSessions,
   updateSession,
   deleteSession,

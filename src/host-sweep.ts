@@ -14,7 +14,7 @@
 import { INSTALL_SLUG } from './config.js';
 import { stopOrphanedSessions } from './container-runner.js';
 import { ensureEgressNetwork } from './egress-lockdown.js';
-import { getActiveSessions } from './db/sessions.js';
+import { getSessionsForPolling } from './db/sessions.js';
 import { peekSessionDriver } from './drivers/index.js';
 import type { SessionWatch } from './drivers/types.js';
 import { log } from './log.js';
@@ -162,7 +162,7 @@ async function sweep(): Promise<void> {
   // RECONCILE_CONCURRENCY of them run at once.
   tickQueue.add('singleton:egress-reheal');
   try {
-    const sessions = await getActiveSessions();
+    const sessions = await getSessionsForPolling();
     for (const session of sessions) {
       tickQueue.add(sessionKey(session.id));
     }

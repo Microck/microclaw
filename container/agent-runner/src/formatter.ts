@@ -1,3 +1,5 @@
+import { SESSION_DIR } from './runtime-paths.js';
+import type { FeedbackTarget } from './mailbox/model.generated.js';
 import { findByRouting } from './destinations.js';
 import type { MessageInRow } from './db/messages-in.js';
 import { TIMEZONE, formatLocalTime, formatLocalStamp } from './timezone.js';
@@ -166,6 +168,7 @@ export interface RoutingContext {
   channelType: string | null;
   threadId: string | null;
   inReplyTo: string | null;
+  feedbackTargets?: FeedbackTarget[];
   /** Batch is a task run. One-door delivery: only an explicitly addressed tool
    *  delivers from a task session; final-text `<message to>` blocks are inert
    *  and the final text auto-appends to the series run log. */
@@ -189,11 +192,16 @@ export function extractRouting(messages: MessageInRow[]): RoutingContext {
   const waking = nonEcho.filter((m) => m.trigger !== 0);
   const preferred = nonEcho[0] && isFailureNotice(nonEcho[0]) ? waking.find((m) => !isFailureNotice(m)) : undefined;
   const first = preferred ?? nonEcho[0] ?? messages[0];
+  const feedbackTargets: FeedbackTarget[] = waking.flatMap((m) => {
+    const target = parseContent(m.content)?.feedbackTarget as FeedbackTarget | undefined;
+    return target ? [target] : [];
+  });
   return {
     platformId: first?.platform_id ?? null,
     channelType: first?.channel_type ?? null,
     threadId: first?.thread_id ?? null,
     inReplyTo: first?.id ?? null,
+    ...(feedbackTargets.length ? { feedbackTargets } : {}),
     // Echo rows riding along with a task must not disable one-door delivery:
     // taskRun as long as at least one task row and no non-task/non-echo row.
     taskRun: messages.some((m) => m.kind === 'task') && messages.every((m) => m.kind === 'task' || isSessionEcho(m)),
@@ -417,7 +425,7 @@ function formatAttachments(attachments: any[] | undefined): string {
   const parts = attachments.map((a) => {
     const name = a.name || a.filename || 'attachment';
     const type = a.type || 'file';
-    const localPath = a.localPath ? `/workspace/${a.localPath}` : '';
+    const localPath = a.localPath ? `${SESSION_DIR}/${a.localPath}` : '';
     const url = a.url || '';
     if (localPath) {
       return `[${type}: ${escapeXml(name)} — saved to ${escapeXml(localPath)}]`;

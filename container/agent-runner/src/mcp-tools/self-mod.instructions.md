@@ -33,4 +33,4 @@ Use HTTPS; plain HTTP is allowed only for `localhost` and
 credentials, fragments, or credential-looking query parameters are rejected;
 authentication belongs in the configured credential gateway.
 
-Do not ask the user to give you credentials or tell them how to create credentials (OAuth, API keys, etc.) — NEVER fabricate credential setup instructions. Credentials are handled by the configured gateway. Use `"gateway-managed"` as the placeholder value for credential env vars or config fields. Follow the installed gateway skill for its connection and recovery flow.
+Do not ask the user to paste credentials into chat or fabricate credential setup instructions. Gateway-managed model/API credentials use the configured gateway and its documented placeholders and connection flow. Native host CLI commands use their existing local logins: do not override `gh`, `git`, `vercel` or other host tools with dummy credentials or require a gateway connection for an already authenticated CLI. Never print stored tokens or authentication files.

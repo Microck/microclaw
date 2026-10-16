@@ -108,8 +108,22 @@ export interface OutboundFile {
   data: Buffer;
 }
 
+/** A non-idempotent platform write may have succeeded; automatic replay is unsafe. */
+export class DeliveryOutcomeUnknownError extends Error {
+  constructor() {
+    super(
+      'Message delivery outcome unknown; automatic resend disabled. Inspect the outbound message and channel before retrying.',
+    );
+    this.name = 'DeliveryOutcomeUnknownError';
+  }
+}
+
 /** Outbound message from host to adapter. */
 export interface OutboundMessage {
+  /** Stable mailbox ID for transport receipts, never supplied by the model. */
+  deliveryId?: string;
+  /** Host-derived sender identity, never supplied by the model. */
+  senderName?: string;
   kind: string;
   content: unknown; // parsed JSON from messages_out
   files?: OutboundFile[]; // file attachments from the session outbox
@@ -238,6 +252,8 @@ export interface ChannelAdapter {
 
   // Outbound delivery — returns the platform message ID if available
   deliver(platformId: string, threadId: string | null, message: OutboundMessage): Promise<string | undefined>;
+  /** Release host-only receipts after the mailbox excludes this ID from retries. */
+  finalizeDelivery?(deliveryId: string): Promise<void>;
 
   // Optional
   setTyping?(

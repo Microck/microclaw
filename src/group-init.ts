@@ -9,6 +9,7 @@ import { prepareClaudeMemorySettings } from './migrate-claude-memory-settings.js
 import { getProviderHostContract } from './provider-contracts/registry.js';
 import { initializeProviderGroupSurfaces } from './provider-contracts/realize.js';
 import { providerProvidesAgentSurfaces } from './providers/provider-container-registry.js';
+import { initializeSupermemory } from './supermemory.js';
 import type { AgentGroup } from './types.js';
 
 /**
@@ -51,6 +52,8 @@ export async function initGroupFilesystem(
     fs.mkdirSync(groupDir, { recursive: true });
     initialized.push('groupDir');
   }
+
+  initializeSupermemory(group);
 
   // plugins/ always exists (even for plugin-less groups) so the read-only
   // plugins mount in container-runner.ts is unconditional.

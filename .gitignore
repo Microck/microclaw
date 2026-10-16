@@ -56,3 +56,6 @@ docs/maintainer-guide.md
 docs/drafts/
 forks.md
 .worktrees/
+
+# Python publication helper caches
+__pycache__/

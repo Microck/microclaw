@@ -12,7 +12,7 @@
  */
 import {
   getRunningSessions,
-  getActiveSessions,
+  getSessionsForPolling,
   createPendingQuestion,
   isTaskThread,
   TASKS_SYSTEM_THREAD_ID,
@@ -34,7 +34,7 @@ import { log } from './log.js';
 import { normalizeOptions } from './channels/ask-question.js';
 import { clearOutbox, readOutboxFiles, withExistingMailboxSession } from './session-manager.js';
 import { pauseTypingRefreshAfterDelivery, setTypingAdapter } from './modules/typing/index.js';
-import type { OutboundFile } from './channels/adapter.js';
+import { DeliveryOutcomeUnknownError, type OutboundFile } from './channels/adapter.js';
 import type { PendingApproval, Session } from './types.js';
 import type { OutboundMessage } from './mailbox/index.js';
 
@@ -92,6 +92,17 @@ async function clearAttemptRow(messageId: string): Promise<void> {
   /* eslint-enable no-catch-all/no-catch-all */
 }
 
+/** Cleanup cannot turn a durably settled mailbox row back into a send retry. */
+async function finalizeDelivery(messageId: string): Promise<void> {
+  /* eslint-disable no-catch-all/no-catch-all -- cleanup failure cannot replay a settled external write */
+  try {
+    await deliveryAdapter?.finalizeDelivery?.(messageId);
+  } catch (err) {
+    log.warn('Failed to clean up delivery receipt', { messageId, err });
+  }
+  /* eslint-enable no-catch-all/no-catch-all */
+}
+
 /**
  * Sessions whose outbound queue is currently being drained.
  *
@@ -102,12 +113,34 @@ async function clearAttemptRow(messageId: string): Promise<void> {
  * the channel adapter, both markDelivered (idempotent in the DB via
  * INSERT OR IGNORE — but the user has already seen the message twice).
  *
- * Skipping (vs. queueing) is correct: any message left over when the
- * second caller skips will be picked up on the next poll tick (~1s).
+ * Control operations can pause the session, abort the remainder of its
+ * current snapshot, and await the already-dispatched send before replacing it.
  */
-const inflightDeliveries = new Set<string>();
+const inflightDeliveries = new Map<string, { controller: AbortController; promise: Promise<void> }>();
+const pausedDeliveries = new Map<string, Promise<void>>();
+
+/** Stop sending cached output while a host control operation replaces the queue. */
+export async function withSessionDeliveryPaused<T>(sessionId: string, action: () => Promise<T>): Promise<T> {
+  const previousPause = pausedDeliveries.get(sessionId);
+  let release!: () => void;
+  const paused = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  pausedDeliveries.set(sessionId, paused);
+  const current = inflightDeliveries.get(sessionId);
+  current?.controller.abort();
+  try {
+    await previousPause;
+    await current?.promise;
+    return await action();
+  } finally {
+    release();
+    if (pausedDeliveries.get(sessionId) === paused) pausedDeliveries.delete(sessionId);
+  }
+}
 
 export interface ChannelDeliveryAdapter {
+  finalizeDelivery?(deliveryId: string): Promise<void>;
   deliver(
     channelType: string,
     platformId: string,
@@ -118,6 +151,8 @@ export interface ChannelDeliveryAdapter {
     /** Delivering adapter instance (defaults to channelType downstream).
      *  Host-internal only — containers never see instance. */
     instance?: string,
+    senderName?: string,
+    deliveryId?: string,
   ): Promise<string | undefined>;
   setTyping?(
     channelType: string,
@@ -205,7 +240,7 @@ async function pollSweep(): Promise<void> {
   const startedAt = Date.now();
 
   try {
-    await deliverToSessions(await getActiveSessions());
+    await deliverToSessions(await getSessionsForPolling());
   } catch (err) {
     log.error('Sweep delivery poll error', { err });
   }
@@ -240,19 +275,23 @@ export async function deliverToSessions(sessions: readonly Session[]): Promise<v
 }
 
 export async function deliverSessionMessages(session: Session): Promise<void> {
-  // Reject re-entry from a concurrent poll on the same session — see the
-  // comment on inflightDeliveries above.
-  if (inflightDeliveries.has(session.id)) return;
-  inflightDeliveries.add(session.id);
-
+  if (pausedDeliveries.has(session.id)) return;
+  const current = inflightDeliveries.get(session.id);
+  if (current) {
+    await current.promise;
+    return deliverSessionMessages(session);
+  }
+  const controller = new AbortController();
+  const promise = drainSession(session, controller.signal);
+  inflightDeliveries.set(session.id, { controller, promise });
   try {
-    await drainSession(session);
+    await promise;
   } finally {
     inflightDeliveries.delete(session.id);
   }
 }
 
-async function drainSession(session: Session): Promise<void> {
+async function drainSession(session: Session, signal: AbortSignal): Promise<void> {
   const agentGroup = await getAgentGroup(session.agent_group_id);
   if (!agentGroup) return;
 
@@ -295,15 +334,22 @@ async function drainSession(session: Session): Promise<void> {
   }
 
   for (const msg of pending) {
+    if (signal.aborted) return;
     try {
-      const platformMsgId = await deliverMessage(msg, session);
+      const platformMsgId = await deliverMessage(msg, session, agentGroup.name);
       await withExistingMailboxSession(agentGroup.id, session.id, (mailbox) =>
         mailbox.markDelivered(msg.id, platformMsgId ?? null),
       );
       const firstDelivery = delivered.size === 0;
       delivered.add(msg.id);
       await clearAttemptRow(msg.id);
-      if (msg.kind !== 'system' && msg.channelType !== 'agent') {
+      await finalizeDelivery(msg.id);
+      if (
+        msg.kind !== 'system' &&
+        msg.kind !== 'agent_progress' &&
+        msg.kind !== 'thread_title' &&
+        msg.channelType !== 'agent'
+      ) {
         pauseTypingRefreshAfterDelivery(session.id);
         if (msg.kind !== 'task_log') {
           // Cross-session context: echo the delivered reply into the
@@ -315,6 +361,7 @@ async function drainSession(session: Session): Promise<void> {
               kind: msg.kind,
               platform_id: msg.platformId,
               channel_type: msg.channelType,
+              thread_id: msg.threadId,
               content: msg.content,
             },
             session,
@@ -331,16 +378,22 @@ async function drainSession(session: Session): Promise<void> {
       }
     } catch (err) {
       const attempts = await recordAttemptRow(msg.id, session.id, err);
-      if (attempts !== null && attempts >= MAX_DELIVERY_ATTEMPTS) {
-        log.error('Message delivery failed permanently, giving up', {
-          messageId: msg.id,
-          sessionId: session.id,
-          attempts,
-          err,
-        });
+      if (err instanceof DeliveryOutcomeUnknownError || (attempts !== null && attempts >= MAX_DELIVERY_ATTEMPTS)) {
+        log.error(
+          err instanceof DeliveryOutcomeUnknownError
+            ? 'Delivery outcome unknown; automatic resend disabled'
+            : 'Message delivery failed permanently, giving up',
+          {
+            messageId: msg.id,
+            sessionId: session.id,
+            attempts,
+            err,
+          },
+        );
         try {
           await withExistingMailboxSession(agentGroup.id, session.id, (mailbox) => mailbox.markDeliveryFailed(msg.id));
           await clearAttemptRow(msg.id);
+          await finalizeDelivery(msg.id);
         } catch (markErr) {
           log.error('Failed to record permanent delivery failure', {
             messageId: msg.id,
@@ -373,6 +426,7 @@ async function deliverMessage(
     inReplyTo: string | null;
   },
   session: Session,
+  senderName: string,
 ): Promise<string | undefined> {
   if (!deliveryAdapter) {
     log.warn('No delivery adapter configured, dropping message', { id: msg.id });
@@ -542,6 +596,8 @@ async function deliverMessage(
     msg.content,
     files,
     deliverInstance,
+    senderName,
+    msg.id,
   );
   log.info('Message delivered', {
     id: msg.id,

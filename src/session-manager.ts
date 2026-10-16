@@ -296,6 +296,10 @@ export async function writeSessionMessage(
   // Extract base64 attachment data, save to inbox, replace with file paths
   const content = extractAttachmentFiles(agentGroupId, sessionId, message.id, message.content);
 
+  // Mark this conversation for polling before its mailbox write becomes
+  // durable, so a crash between databases cannot strand the first message.
+  await updateSession(sessionId, { last_active: new Date().toISOString() });
+
   await withMailboxSession(agentGroupId, sessionId, async (mailbox) => {
     await mailbox.insertMessage({
       id: message.id,
@@ -312,7 +316,6 @@ export async function writeSessionMessage(
       onWake: message.onWake ?? false,
     });
   });
-  await updateSession(sessionId, { last_active: new Date().toISOString() });
   // Ask for a prompt reconcile now that the message is durable: a wake that
   // fails transiently is retried within the queue's cadence instead of
   // waiting for the next resync tick. No-op when the sweep isn't running.

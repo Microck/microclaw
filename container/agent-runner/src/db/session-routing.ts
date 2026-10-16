@@ -42,9 +42,13 @@ export function resolveDestinationThread(
   channelType: string,
   platformId: string,
   replyingTo?: (Omit<ReplyRoute, 'inReplyTo'> & { inReplyTo: string | null }) | null,
-): { threadId: string | null; inReplyTo: string | null } | null {
+): { threadId: string | null; inReplyTo: string | null; replyTarget?: ReplyRoute['replyTarget'] } | null {
   if (replyingTo && replyingTo.channelType === channelType && replyingTo.platformId === platformId) {
-    return { threadId: replyingTo.threadId, inReplyTo: replyingTo.inReplyTo };
+    return {
+      threadId: replyingTo.threadId,
+      inReplyTo: replyingTo.inReplyTo,
+      ...(replyingTo.replyTarget ? { replyTarget: replyingTo.replyTarget } : {}),
+    };
   }
   try {
     return getAgentMailbox().operations.getLatestInboundRoute(channelType, platformId);

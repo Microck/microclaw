@@ -42,8 +42,20 @@ export type SessionRouting = SessionRoutingRecord;
 export type OutboundMessageDraft = OutboundWrite;
 export type StateValue = Omit<StateRecord, 'key'>;
 
+export interface MemoryTranscriptEntry {
+  id: string;
+  timestamp: string;
+  role: 'user' | 'assistant';
+  text: string;
+}
+
 export interface MailboxOperations {
-  getPendingMessages(limit: number, isFirstPoll: boolean): InboundMessage[];
+  /** Own Discord conversation text only; excludes tools, tasks, and copied context. */
+  getMemoryTranscript(
+    since: string,
+    previousRevision?: string,
+  ): { revision: string; entries?: MemoryTranscriptEntry[] };
+  getPendingMessages(limit: number, isFirstPoll: boolean, busy?: boolean): InboundMessage[];
   markMessages(ids: string[], status: ProcessingStatus): void;
   markScriptSkipped(skips: Array<{ id: string; reason: string }>): void;
   getMessageIn(id: string): InboundMessage | undefined;
@@ -54,6 +66,7 @@ export interface MailboxOperations {
   getRoutingBySeq(sequence: number): SessionRouting | null;
   getLatestInboundRoute(channelType: string, platformId: string): { threadId: string | null; inReplyTo: string } | null;
   getUndeliveredMessages(): OutboundMessage[];
+  hasMessageOut(id: string): boolean;
   getState(key: string): StateValue | undefined;
   setState(key: string, value: string): void;
   deleteState(key: string): void;

@@ -446,3 +446,7 @@ only the resulting summary crosses the approval channel. The original request
 stream is preserved. The source is checksum-verified, its upstream tests run in
 the image build, and a version mismatch against OneCLI's gateway pin fails the
 build. See `gateway-compat/onecli-summary/README.md`.
+
+### Configured memory service
+
+An enabled Supermemory integration permits its own agent's POST document, profile, and search routes without a card. The gateway must attest `destination.path` from the request URL, without a query or fragment. Display-only audit metadata never grants access. An exact GET billing-summary request is permitted for credit monitoring. Other namespaces, administration writes, deletion, and explicit policy holds retain approval. See [Supermemory](supermemory.md).

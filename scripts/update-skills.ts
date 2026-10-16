@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 
 import { applySkill, fullyApplied, type DependencyCommandRequest } from './skill-apply.js';
 import { parseDirectives } from './skill-directives.js';
+import { captureSkillCustomizations, restoreSkillCustomizations } from './update-customizations.js';
 import { pinnedBunVersion } from './provider-contract-verifier.js';
 
 export type InstalledSkillKind = 'channel' | 'provider' | 'gateway';
@@ -148,6 +149,7 @@ export async function refreshInstalledSkills(
   const results: SkillRefreshResult[] = [];
   const bunOnHost = (options.commandAvailable ?? commandAvailable)('bun', root);
 
+  const customizations = captureSkillCustomizations(root);
   for (const skill of selected) {
     const skillDir = path.join(root, '.claude/skills', skill.skillName);
     const errors: string[] = [];
@@ -202,6 +204,7 @@ export async function refreshInstalledSkills(
     }
   }
 
+  restoreSkillCustomizations(root, customizations, results.every((result) => result.status === 'refreshed'));
   return {
     schema: 'nanoclaw-skill-refresh/v1',
     schemaVersion: 1,

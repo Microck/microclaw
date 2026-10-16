@@ -312,10 +312,12 @@ describe('composeGroupProjectDoc spec', () => {
   // rendered base must be byte-identical to the template minus its placeholder
   // paragraph, so the Claude document never changes when facts are added for
   // other providers.
-  it('renders the canonical base byte-identically when no provider facts are declared', () => {
+  it('renders container paths and access instructions without unexpanded runtime placeholders', () => {
     const template = fs.readFileSync(path.join(process.cwd(), BASE_INSTRUCTIONS_PATH), 'utf-8');
     expect(template.split(MEMORY_NOTE_PLACEHOLDER)).toHaveLength(2);
-    expect(renderBaseInstructions(template)).toBe(template.replace(`\n\n${MEMORY_NOTE_PLACEHOLDER}`, ''));
+    expect(renderBaseInstructions(template)).toContain('/workspace/agent/');
+    expect(renderBaseInstructions(template)).toContain('not this container');
+    expect(renderBaseInstructions(template)).not.toMatch(/{{[^}]+}}/);
     expect(renderBaseInstructions(template)).not.toContain(MEMORY_NOTE_PLACEHOLDER);
   });
 
@@ -388,6 +390,21 @@ describe('composeGroupProjectDoc spec', () => {
 });
 
 describe('composeGroupProjectDoc size cap', () => {
+  it('keeps user snippets unchanged and caps after native resource paths are rendered', async () => {
+    const ag = await seed('ag-native-cap', 'native-cap-group');
+    const original = 'User example: /workspace/agent must stay literal here.';
+    writePersona(ag.folder, original);
+    const doc = await compose(ag, { ...CLAUDE_SPEC, hostExecution: true, maxBytes: 24 * 1024 });
+    expect(doc).toContain(original);
+    expect(doc).toContain('Read and edit ordinary host paths directly');
+    expect(doc).toContain('Use existing host CLI authentication');
+    expect(doc).toContain('Do not set dummy `GH_TOKEN`');
+    expect(doc).not.toContain('Do not run `gh auth login`');
+    expect(doc).not.toContain('not this container');
+    expect(doc).toContain(`${groupDirOf(ag.folder)}/memory/`);
+    expect(Buffer.byteLength(doc, 'utf8')).toBeLessThanOrEqual(24 * 1024);
+  });
+
   const bigMcp = (n: number): Record<string, { command: string; args: string[]; instructions: string }> =>
     Object.fromEntries(
       Array.from({ length: n }, (_, i) => [`bloated${i}`, { command: 'x', args: [], instructions: 'B'.repeat(9000) }]),

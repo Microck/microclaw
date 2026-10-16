@@ -77,8 +77,8 @@ function getMaxMessagesPerPrompt(): number {
  * ack filter would then empty it, and genuinely new rows beyond the window
  * would be invisible for the rest of the turn.
  */
-export function getPendingMessages(isFirstPoll = false): MessageInRow[] {
-  return getAgentMailbox().operations.getPendingMessages(getMaxMessagesPerPrompt(), isFirstPoll).map(messageRow);
+export function getPendingMessages(isFirstPoll = false, busy = false): MessageInRow[] {
+  return getAgentMailbox().operations.getPendingMessages(getMaxMessagesPerPrompt(), isFirstPoll, busy).map(messageRow);
 }
 
 export function markProcessing(ids: string[]): void {
@@ -110,4 +110,20 @@ export function findQuestionResponse(questionId: string): MessageInRow | undefin
 export function findCliResponse(requestId: string): MessageInRow | undefined {
   const message = getAgentMailbox().operations.findCliResponse(requestId);
   return message && messageRow(message);
+}
+
+/** Re-read queued inputs after claiming, so edits/cancellations racing selection win. */
+export function claimMessages(messages: MessageInRow[]): MessageInRow[] {
+  markProcessing(messages.map((message) => message.id));
+  return messages.flatMap((message) => {
+    try {
+      if (JSON.parse(message.content)?.delivery !== 'queue') return [message];
+    } catch {
+      return [message];
+    }
+    const latest = getMessageIn(message.id);
+    if (latest?.status === 'pending') return [latest];
+    markCompleted([message.id]);
+    return [];
+  });
 }

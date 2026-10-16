@@ -1,3 +1,4 @@
+import { AGENT_DIR } from '../runtime-paths.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -20,7 +21,7 @@ import { fileURLToPath } from 'url';
  */
 const TEMPLATES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'templates');
 
-export function ensureMemoryScaffold(baseDir = '/workspace/agent'): void {
+export function ensureMemoryScaffold(baseDir = AGENT_DIR): void {
   const memoryDir = path.join(baseDir, 'memory');
   const systemDir = path.join(memoryDir, 'system');
 

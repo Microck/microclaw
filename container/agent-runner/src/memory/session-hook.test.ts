@@ -3,12 +3,13 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+import { SOURCE_DIR } from '../runtime-paths.js';
 import { MEMORY_SESSION_HOOK, memoryContextForSessionStart, type MemorySessionStartSource } from './session-hook.js';
 
 describe('memory SessionStart contract', () => {
   it('injects startup, clear, and compact but not resume', () => {
     expect(MEMORY_SESSION_HOOK).toMatchObject({
-      command: 'bun /app/src/memory/hook.ts',
+      command: `bun ${SOURCE_DIR}/memory/hook.ts`,
       legacyCommands: ['bun /app/src/memory-hook.ts'],
       sources: ['startup', 'clear', 'compact'],
     });

@@ -6,6 +6,19 @@ const ROOT = '/workspace/agent/plugins/sdr';
 const DATA = '/workspace/agent/plugin-data/sdr';
 
 describe('resolvePluginServer', () => {
+  it('resolves native plugin command, cwd, args and data inside the agent workspace', () => {
+    expect(
+      resolvePluginServer(
+        { command: './server', pluginRoot: ROOT, cwd: '${PLUGIN_DATA}', args: ['${PLUGIN_ROOT}/config'] },
+        '/home/ubuntu/agent',
+      ),
+    ).toMatchObject({
+      command: '/home/ubuntu/agent/plugins/sdr/server',
+      cwd: '/home/ubuntu/agent/plugin-data/sdr',
+      args: ['/home/ubuntu/agent/plugins/sdr/config'],
+      env: { PLUGIN_ROOT: '/home/ubuntu/agent/plugins/sdr', PLUGIN_DATA: '/home/ubuntu/agent/plugin-data/sdr' },
+    });
+  });
   it('expands placeholders in args and env values and injects the two plugin vars', () => {
     const resolved = resolvePluginServer({
       command: 'node',
@@ -63,5 +76,4 @@ describe('resolvePluginServer', () => {
       cwd: DATA,
     });
   });
-
 });

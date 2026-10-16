@@ -14,6 +14,7 @@ import fs from 'fs';
 import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from '../mailbox/sqlite/connection.js';
 import { getUndeliveredMessages } from '../db/messages-out.js';
 import { sendFile, sendMessage } from './core.js';
+import { setCurrentReplyRoute } from '../db/session-state.js';
 
 /**
  * Publish the reply stamp the way the poll loop does: a direct write to
@@ -107,6 +108,23 @@ afterEach(() => {
 });
 
 describe('send_message MCP tool — in_reply_to plumbing', () => {
+  it('carries the original Discord target only to the conversation being answered', async () => {
+    const replyTarget = { platformId: 'discord:123:456', messageId: '823456789012345678' };
+    seedChannelDestination('origin', 'discord', 'home');
+    setCurrentReplyRoute({
+      inReplyTo: 'request',
+      channelType: 'discord',
+      platformId: 'home',
+      threadId: 'thread',
+      replyTarget,
+    });
+    await sendMessage.handler({ to: 'origin', text: 'Actual result' });
+    await sendMessage.handler({ to: 'peer', text: 'Unrelated message' });
+    const out = getUndeliveredMessages();
+    expect(JSON.parse(out[0].content).replyTarget).toEqual(replyTarget);
+    expect(JSON.parse(out[1].content).replyTarget).toBeUndefined();
+  });
+
   it('stamps the batch in_reply_to (published via the DB) on outbound rows', async () => {
     publishInReplyTo('inbound-msg-1');
 

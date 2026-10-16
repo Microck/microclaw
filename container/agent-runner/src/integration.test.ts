@@ -1,3 +1,6 @@
+import path from 'node:path';
+import { SESSION_DIR } from './runtime-paths.js';
+import { getAgentMailbox } from './mailbox/index.js';
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
 import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from './mailbox/sqlite/connection.js';
@@ -79,6 +82,54 @@ describe('poll loop integration', () => {
     await loopPromise.catch(() => {});
   });
 
+  it('carries the original Discord message into the actual answer', async () => {
+    const replyTarget = { platformId: 'discord:123:456', messageId: '823456789012345678' };
+    insertMessage(
+      'reply-source',
+      { sender: 'Alice', text: 'Question', feedbackTarget: replyTarget },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-1' },
+    );
+    const provider = new MockProvider({}, () => '<message to="discord-test">Actual answer</message>');
+    const controller = new AbortController();
+    const loop = runPollLoopWithTimeout(provider, controller.signal, 2000);
+    await waitFor(() => getUndeliveredMessages().some((message) => message.kind === 'chat'), 2000);
+    controller.abort();
+    await loop.catch(() => {});
+    const answer = getUndeliveredMessages().find((message) => message.kind === 'chat')!;
+    expect(JSON.parse(answer.content)).toEqual({ text: 'Actual answer', replyTarget });
+  });
+  it('feeds a cached voice note into the initial prompt and a later voice follow-up', async () => {
+    const heard: string[] = [];
+    const seedVoice = (id: string, text: string) => {
+      const localPath = `inbox/${id}/voice.ogg`;
+      getAgentMailbox().operations.setState(
+        `voice:${id}`,
+        JSON.stringify({ text, transcripts: { [path.resolve(SESSION_DIR, localPath)]: text } }),
+      );
+      insertMessage(
+        id,
+        { text: '', attachments: [{ type: 'audio', localPath }] },
+        { platformId: 'chan-1', channelType: 'discord', threadId: 'voice-thread' },
+      );
+    };
+    seedVoice('voice-first', 'What is the weather?');
+    const provider = new MockProvider({}, (prompt) => {
+      heard.push(prompt);
+      return '<message to="discord-test">Heard you.</message>';
+    });
+    const controller = new AbortController();
+    const loop = runPollLoopWithTimeout(provider, controller.signal, 5000);
+    await waitFor(() => getUndeliveredMessages().filter((row) => row.kind === 'chat').length === 2, 2000);
+    seedVoice('voice-next', 'Actually tell me about tomorrow.');
+    await waitFor(() => getUndeliveredMessages().filter((row) => row.kind === 'chat').length === 4, 3000);
+    controller.abort();
+    await loop.catch(() => {});
+    const replies = getUndeliveredMessages().filter((row) => row.kind === 'chat');
+    expect(replies.filter((row) => row.id.startsWith('voice-transcript:'))).toHaveLength(2);
+    expect(replies.filter((row) => JSON.parse(row.content).text === 'Heard you.')).toHaveLength(2);
+    expect(heard[0]).toContain('What is the weather?');
+    expect(heard[1]).toContain('Actually tell me about tomorrow.');
+  });
   it('should process multiple messages in a batch', async () => {
     insertMessage('m1', { sender: 'Alice', text: 'Hello' });
     insertMessage('m2', { sender: 'Bob', text: 'World' });

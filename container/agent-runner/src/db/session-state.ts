@@ -1,3 +1,4 @@
+import type { FeedbackTarget } from '../mailbox/model.generated.js';
 /**
  * Persistent key/value state owned by the registered mailbox.
  *
@@ -78,6 +79,7 @@ export function clearContinuation(providerName: string): void {
  */
 export interface ReplyRoute {
   inReplyTo: string;
+  replyTarget?: FeedbackTarget;
   channelType: string | null;
   platformId: string | null;
   threadId: string | null;
@@ -106,8 +108,8 @@ export function setCurrentReplyRoute(route: ReplyRoute | null): void {
     clearCurrentReplyRoute();
     return;
   }
-  const { inReplyTo, channelType, platformId, threadId } = route;
-  setValue(REPLY_ROUTE_KEY, JSON.stringify({ inReplyTo, channelType, platformId, threadId }));
+  const { inReplyTo, channelType, platformId, threadId, replyTarget } = route;
+  setValue(REPLY_ROUTE_KEY, JSON.stringify({ inReplyTo, channelType, platformId, threadId, replyTarget }));
 }
 
 export function clearCurrentReplyRoute(): void {
@@ -122,6 +124,7 @@ export function getCurrentReplyRoute(): ReplyRoute | null {
     if (typeof parsed.inReplyTo !== 'string') return null;
     return {
       inReplyTo: parsed.inReplyTo,
+      ...(parsed.replyTarget ? { replyTarget: parsed.replyTarget } : {}),
       channelType: parsed.channelType ?? null,
       platformId: parsed.platformId ?? null,
       threadId: parsed.threadId ?? null,

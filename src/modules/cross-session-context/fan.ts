@@ -1,45 +1,19 @@
 /**
- * Cross-session context — accumulate fan-out.
+ * Context for messages actually delivered into one conversation.
  *
- * Copies triggering user messages (router hook) and the agent's own delivered
- * user-facing messages (delivery hook) into sibling sessions of the same
- * conversation as trigger=0 rows with channel_type 'session-echo'. Echo rows
- * ride along as ambient context with the next real trigger — they never wake
- * a container, never provide reply routing (thread_id NULL; the formatter's
- * reply-routing extraction skips 'session-echo'), and are never themselves
- * fanned (loop guard: fan entries reject 'session-echo' rows, and echo writes
- * go straight to the target mailbox, never through routeInbound).
- *
- * Audience rule: a message fans ONLY into sibling sessions of the
- * conversation it actually appeared in — for inbound, the messaging group it
- * arrived on; for outbound, the messaging group it was delivered to. Same
- * messaging group = identical audience by definition, so every fan is
- * provably audience-safe with no membership knowledge needed. Nothing else is
- * ever a target: not the group's other conversations, not task sessions
- * (task sessions have no messaging group). Cross-conversation awareness is
- * pull-only: `ncl sessions history`. Task sessions are never an inbound
- * SOURCE (the series prompt is series-internal); a task's DELIVERED
- * user-facing send fans like any other delivery.
- *
- * Bound: within that audience, only the HOT SET receives live echoes — the
- * conversation's HOT_SESSION_LIMIT most recently active sessions (within
- * ECHO_MAX_AGE_DAYS) plus its top-level session. A session outside the hot
- * set catches up from the hot set when it next wakes (backfill.ts). Ranking
- * is by `sessions.last_active`, which only REAL inbound messages bump — echo
- * writes deliberately bypass writeSessionMessage so ambient traffic never
- * makes an idle thread look busy.
- *
- * Cost: the fan is off the message's critical path (callers fire it after
- * the wake, unawaited), does one bounded central read, and writes its ≤ K+1
- * targets concurrently through the lean path (existing mailbox only — no
- * provisioning, no last_active bump, no reconcile enqueue). Never throws.
+ * A conversation is agent group × messaging group × exact thread, including
+ * null for the parent channel. The database scopes candidates before ranking;
+ * sharing a channel or audience never makes separate threads share context.
+ * Own replies exclude their source session. A scheduled or explicit send from
+ * another session can add context only to the conversation where it appeared.
+ * Writes remain non-triggering, bounded, and off the delivery critical path.
  */
 import {
   getMessagingGroup,
   getMessagingGroupByPlatform,
   getMessagingGroupForOwnDestination,
 } from '../../db/messaging-groups.js';
-import { findSessionForAgent, getRecentConversationSessions, isTaskThread } from '../../db/sessions.js';
+import { getRecentConversationSessions, isTaskThread } from '../../db/sessions.js';
 import { log } from '../../log.js';
 import { withExistingMailboxSession } from '../../session-manager.js';
 import type { AgentGroup, MessagingGroup, Session } from '../../types.js';
@@ -120,9 +94,8 @@ function activeAt(session: EchoTargetCandidate): number {
 
 /**
  * Pure hot-set rule (see header): the conversation's HOT_SESSION_LIMIT most
- * recently active sessions within ECHO_MAX_AGE_MS, plus its top-level session
- * when that is active in the window — a thread is usually a reply to
- * something said at the top level, so it must stay in view. Closed sessions,
+ * recently active sessions within ECHO_MAX_AGE_MS. Candidates have already
+ * been scoped to the exact thread by the database query. Closed sessions,
  * sessions of other conversations, sessions with no messaging group (task,
  * a2a), and sessions that never received a message are never hot. Dedupes by
  * id, so callers may pass overlapping candidate lists; an unresolved
@@ -151,7 +124,7 @@ export function selectHotSessions<T extends EchoTargetCandidate>(
 
 /**
  * Fan audience: the hot set of the conversation's OTHER sessions — the source
- * never counts against the K slots, so up to K siblings (+ top-level) hear a
+ * never counts against the K slots, so up to K same-thread sessions hear a
  * message whether or not the source is itself hot.
  */
 export function selectEchoTargets<T extends EchoTargetCandidate>(
@@ -167,24 +140,15 @@ export function selectEchoTargets<T extends EchoTargetCandidate>(
   );
 }
 
-/**
- * Load the hot-set candidates from the central DB: one bounded query for the
- * K+1 most recently active sessions (one spare so excluding any single
- * session still leaves a full K) plus the top-level lookup, issued together.
- * K+2 rows at most, however many sessions the channel has. Feed the result to
- * selectHotSessions / selectEchoTargets.
- */
+/** Load only sessions of the exact destination conversation, never sibling threads. */
 export async function loadHotCandidates(
   agentGroupId: string,
   messagingGroupId: string,
+  threadId: string | null,
   nowMs: number = Date.now(),
 ): Promise<Session[]> {
   const sinceIso = new Date(nowMs - ECHO_MAX_AGE_MS).toISOString();
-  const [recent, topLevel] = await Promise.all([
-    getRecentConversationSessions(agentGroupId, messagingGroupId, sinceIso, HOT_SESSION_LIMIT + 1),
-    findSessionForAgent(agentGroupId, messagingGroupId, null),
-  ]);
-  return topLevel ? [...recent, topLevel] : recent;
+  return getRecentConversationSessions(agentGroupId, messagingGroupId, threadId, sinceIso, HOT_SESSION_LIMIT + 1);
 }
 
 function parseContent(raw: string): { text: string; sender: string | null; senderId: string | null } {
@@ -206,6 +170,7 @@ interface EchoFanInput {
   /** Messaging group of the conversation the message appeared in — the ONLY
    *  conversation whose sessions are targets. */
   sourceMessagingGroupId: string | null;
+  conversationThreadId: string | null;
   origMessageId: string;
   timestamp: string;
   surface: EchoWireSurface;
@@ -247,7 +212,11 @@ async function writeEcho(input: EchoFanInput, targetSessionId: string, content: 
 
 async function fanEcho(input: EchoFanInput): Promise<number> {
   if (input.sourceMessagingGroupId === null) return 0;
-  const candidates = await loadHotCandidates(input.agentGroupId, input.sourceMessagingGroupId);
+  const candidates = await loadHotCandidates(
+    input.agentGroupId,
+    input.sourceMessagingGroupId,
+    input.conversationThreadId,
+  );
   const targets = selectEchoTargets(candidates, input.sourceSessionId, input.sourceMessagingGroupId);
   if (targets.length === 0) return 0;
 
@@ -333,6 +302,7 @@ async function fanInbound(args: Parameters<typeof fanInboundMessage>[0]): Promis
       agentGroupId: session.agent_group_id,
       sourceSessionId: session.id,
       sourceMessagingGroupId: mg.id,
+      conversationThreadId: session.thread_id,
       origMessageId: args.messageId,
       timestamp: args.timestamp,
       surface: ECHO_SIBLING_SURFACE,
@@ -364,6 +334,7 @@ export function fanOutboundMessage(
     id: string;
     kind: string;
     platform_id: string | null;
+    thread_id: string | null;
     channel_type: string | null;
     content: string;
   },
@@ -403,6 +374,7 @@ async function fanOutbound(
       agentGroupId: session.agent_group_id,
       sourceSessionId: session.id,
       sourceMessagingGroupId: mg.id,
+      conversationThreadId: msg.thread_id,
       origMessageId: msg.id,
       timestamp: new Date().toISOString(),
       surface: isTaskSource ? ECHO_TASK_SURFACE : ECHO_SIBLING_SURFACE,

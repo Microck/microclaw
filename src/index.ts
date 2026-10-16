@@ -71,6 +71,8 @@ import {
 let stopGatewayAvailabilityMonitor: (() => void) | undefined;
 
 async function main(): Promise<void> {
+  // Give supervisors and memory-pressure tools the controller's actual identity.
+  process.title = 'nanoclaw-host';
   log.info('NanoClaw starting');
 
   // 0. Circuit breaker — backoff on rapid restarts

@@ -1,47 +1,39 @@
 ---
 name: iron-proxy-gateway
-description: Use Iron Proxy for external accounts and APIs, including GitHub through gh. Connect credentials through the operator console and diagnose blocked requests without exposing tokens or adding unnecessary MCP servers.
-compatibility: Requires HTTP_PROXY, HTTPS_PROXY, and the Iron Proxy CA injected by NanoClaw.
+description: Use Iron Proxy for gateway-managed model and API credentials. Native host CLIs use their existing local authentication. Connect gateway accounts through the operator console and diagnose blocked requests without exposing tokens.
+compatibility: Gateway-managed clients require the injected proxy and CA. Native host commands retain normal host authentication and networking.
 metadata:
   author: nanoclaw
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # Iron Proxy gateway
 
-Your outbound HTTP and HTTPS requests pass through your session's Iron Proxy. A policy-selected credential request waits for human approval before the proxy inserts a credential. You receive only a useless placeholder.
+## Native host commands
 
-## Policy failures
+When NanoClaw runs directly on the host (`NANOCLAW_AGENT_DIR` is set), ordinary shell commands use the user's existing CLI logins and normal host networking. Run `gh`, `git`, `vercel` and other CLIs normally. Never override their authentication with dummy `GH_TOKEN`, `GITHUB_TOKEN`, `VERCEL_TOKEN` or `gateway-managed` values. Do not read or print stored tokens.
 
-A bare `403` does not prove which layer rejected the request. It may be the destination rule, credential grant, human approval, or upstream API. Respect the block, report the hostname and observed error, and request a host-side check instead of guessing that credentials were never injected.
+Check native CLI authentication directly before declaring it invalid, for example `gh api user` or `vercel whoami`, without credential overrides. A GitHub MCP connection has separate permissions; its write denial does not mean the native GitHub CLI is unauthenticated. Existing native CLI logins do not need an Iron Control connection.
 
-## Connect an account
+The model provider and Supermemory still use the injected gateway. The following rules govern clients whose requests actually pass through that proxy, including container clients.
 
-Run the shared command for the API hostname requested by the user:
+## Gateway-managed connections
+
+A policy-selected credential request waits for approval before the proxy inserts a credential. These clients receive only a documented non-secret placeholder. Real gateway credentials stay in the gateway; never paste them into a client or store them through a container login.
+
+For a requested gateway account connection, run:
 
 ```bash
 ncl groups connect --host <API hostname>
 ```
 
-Return the exact `connect_url` and describe its `action`. An `operator_console`
-handoff requires the operator to configure the credential, grant, and destination
-in the gateway; it is not an OAuth link. Do not invent a connection flow when the
-result is `unsupported`. The command does not grant access or change policy.
+Return the exact `connect_url` and describe its `action`. An `operator_console` handoff requires operator configuration of the gateway credential, grant and destination. It is not an OAuth link. The command does not grant access or change policy. Do not invent a connection flow when the result is `unsupported`, or add an MCP server merely to connect an account.
 
-Use the user's requested CLI or a direct HTTP client. Do not add an MCP server
-merely to connect an account. Clients requiring local authentication may use
-`gateway-managed` as a non-secret placeholder (for example `GH_TOKEN` for `gh`).
-Never use a real token in the client. Never run a local login to store credentials.
-
-Request approval and account connection are separate. A 401 is not proof that
-injection did not happen: the stored token may itself be invalid. Report the
-observed result, follow the shared handoff, and verify with a credentialed request
-after the operator completes configuration. Never claim connected before success.
+A bare 401 or 403 does not identify the failing layer. It may be a destination rule, credential grant, approval or upstream API. Report the hostname and observed error and request a host-side check. Request approval and account connection are separate; verify a credentialed request before claiming success.
 
 ## Rules
 
-- Never ask for, print, or store a raw API key or OAuth token.
-- Never bypass the configured proxy or its CA validation.
-- Never treat a pending approval as granted.
-- Never claim a blocked destination is connected.
-- Treat proxy errors as policy or operator-configuration errors, not as permission to weaken TLS.
+- Never ask for, print or store a raw API key or OAuth token in chat or an agent workspace.
+- Never bypass the configured proxy for gateway-managed traffic or weaken TLS validation.
+- Never treat a pending approval as granted or claim that a blocked destination is connected.
+- Ordinary native host CLI authentication remains available; gateway placeholders are not a replacement for it.
