@@ -12,6 +12,7 @@ import tempfile
 
 
 EXCLUDED = 'docs/hermes-migration.md'
+PUBLIC_LINKS = {'AGENTS.md': 'CLAUDE.md', '.agents/skills': '../.claude/skills'}
 IDENTITY = {'JJ_USER': 'Microck', 'JJ_EMAIL': 'contact@micr.dev'}
 
 
@@ -73,8 +74,14 @@ def validate(checkout, location):
     revision = jj(checkout, 'log', '-r', '@', '--no-graph', '-T', 'commit_id')
     paths = run(checkout, 'git', 'ls-tree', '-r', '--name-only', revision).decode().splitlines()
     for name in paths:
+        if name in PUBLIC_LINKS:
+            mode = run(checkout, 'git', 'ls-tree', revision, '--', name).decode().split()[0]
+            target = run(checkout, 'git', 'show', f'{revision}:{name}').decode()
+            if mode != '120000' or target != PUBLIC_LINKS[name]:
+                raise ValueError(f'Public instruction link changed: {name}')
+            continue
         parts = Path(name).parts
-        if parts[0] in {'data', 'store', 'logs', 'groups', '.nanoclaw', '.agents', '.codex', '.hermes'} or parts[0].startswith('.env') or name.endswith('.keys.json') or name in {'AGENTS.md', EXCLUDED}:
+        if parts[0] in {'data', 'store', 'logs', 'groups', '.nanoclaw', '.agents', '.codex', '.hermes'} or (parts[0].startswith('.env') and name != '.env.example') or name.endswith('.keys.json') or name in {'AGENTS.md', EXCLUDED}:
             raise ValueError(f'Private installation path cannot be published: {name}')
     with tempfile.TemporaryDirectory(prefix='microclaw-scan-') as directory:
         archive = run(checkout, 'git', 'archive', revision)
@@ -87,7 +94,7 @@ def validate(checkout, location):
     verification = """set -eu
 mkdir /workspace/microclaw
 tar -xf /tmp/microclaw.tar -C /workspace/microclaw
-useradd --create-home --shell /bin/bash verifier
+useradd --groups docker --create-home --shell /bin/bash verifier
 chown -R verifier:verifier /workspace/microclaw
 uid=$(id -u verifier)
 loginctl enable-linger verifier

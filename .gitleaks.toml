@@ -15,5 +15,6 @@ regexes = [
   '''^sk\-abc123def456$''',
   '''^sk\-live\-1234567890$''',
   '''^sk\-live\-abc123$''',
+  '''^slack:\{\{slack_user_id\}\}$''',
 ]
 paths = ['''(^|/)\.gitleaks\.toml$''']

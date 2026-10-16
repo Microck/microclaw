@@ -106,7 +106,7 @@ The agent's global Node CLIs install from `container/cli-tools.json` (a json-mer
 { "name": "@openai/codex", "version": "0.155.1" }
 ```
 
-The version (`0.155.1`) is the canonical pin — this SKILL.md is the source of truth.
+The version (`0.162.1`) is the canonical pin — this SKILL.md is the source of truth.
 
 ### 4. Build
 
