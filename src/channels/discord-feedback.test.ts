@@ -188,7 +188,9 @@ describe('dynamic Discord thread status', () => {
       status.set(thread, 'running'),
       status.rename(thread, { title: 'Research', initialName: 'Thread today' }),
     ]);
-    expect(name).toBe('🟡 Research');
+    expect(name).toBe('Thread today');
+    await status.set(thread, 'completed', 'Thread today');
+    expect(name).toBe('🟢 Research');
   });
 });
 
@@ -243,4 +245,119 @@ it('replays a pending persisted title after controller restart', async () => {
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+
+describe('first-turn title and completion coalescing', () => {
+  for (const titleFirst of [true, false]) {
+    it(`uses one rename when ${titleFirst ? 'the title' : 'completion'} arrives first, including after restart`, async () => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-title-complete-'));
+      const file = path.join(directory, 'status.json');
+      const thread = 'discord:123:456:123456789012345678';
+      let name = '🟡 Thread today';
+      const patches: string[] = [];
+      const request: typeof fetch = async (_url, init) => {
+        if (init?.method === 'PATCH') {
+          name = JSON.parse(String(init.body)).name;
+          patches.push(name);
+        }
+        return Response.json({ name });
+      };
+      try {
+        let status = new DiscordThreadStatus('fixture', request, file);
+        await status.set(thread, 'running');
+        if (titleFirst) await status.rename(thread, { title: 'Ask what day it is', initialName: 'Thread today' });
+        else await status.set(thread, 'completed', 'Thread today');
+        expect(patches).toEqual([]);
+        status = new DiscordThreadStatus('fixture', request, file);
+        if (titleFirst) await status.set(thread, 'completed', 'Thread today');
+        else await status.rename(thread, { title: 'Ask what day it is', initialName: 'Thread today' });
+        expect(patches).toEqual(['🟢 Ask what day it is']);
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    });
+  }
+  it('preserves manual edits and releases completion when generation keeps the original name', async () => {
+    let name = '🟡 My manual name';
+    const patches: string[] = [];
+    const request: typeof fetch = async (_url, init) => {
+      if (init?.method === 'PATCH') {
+        name = JSON.parse(String(init.body)).name;
+        patches.push(name);
+      }
+      return Response.json({ name });
+    };
+    const status = new DiscordThreadStatus('fixture', request);
+    const thread = 'discord:123:456:123456789012345678';
+    await status.set(thread, 'completed', 'Thread today');
+    expect(patches).toEqual([]);
+    await status.rename(thread, { title: 'Thread today', initialName: 'Thread today' });
+    expect(patches).toEqual(['🟢 My manual name']);
+  });
+  for (const state of ['blocked', 'cancelled'] as const) {
+    it(`does not hold ${state} while waiting for a title`, async () => {
+      let name = '🟡 Thread today';
+      const request: typeof fetch = async (_url, init) => {
+        if (init?.method === 'PATCH') name = JSON.parse(String(init.body)).name;
+        return Response.json({ name });
+      };
+      const status = new DiscordThreadStatus('fixture', request);
+      const thread = 'discord:123:456:123456789012345678';
+      await status.set(thread, 'completed', 'Thread today');
+      await status.set(thread, state);
+      expect(name).toBe(state === 'blocked' ? '🔴 Thread today' : 'Thread today');
+    });
+  }
+});
+
+it('releases completed status after a lost title worker reaches its persisted deadline', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-title-worker-loss-'));
+  const file = path.join(directory, 'status.json');
+  const thread = 'discord:123:456:123456789012345678';
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      [thread]: { state: 'completed', initialName: 'Thread today', titleDeadline: Date.now() - 1, dirty: true },
+    }),
+  );
+  let name = '🟡 Thread today';
+  const patches: string[] = [];
+  const request: typeof fetch = async (_url, init) => {
+    if (init?.method === 'PATCH') {
+      name = JSON.parse(String(init.body)).name;
+      patches.push(name);
+    }
+    return Response.json({ name });
+  };
+  try {
+    const status = new DiscordThreadStatus('fixture', request, file);
+    await status.set(thread, 'completed');
+    expect(patches).toEqual(['🟢 Thread today']);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))[thread].dirty).toBe(false);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+it("retries a blocker on Discord's cooldown without waiting for the title deadline", async () => {
+  let name = '🟡 Thread today';
+  let limited = true;
+  const patches: string[] = [];
+  const request: typeof fetch = async (_url, init) => {
+    if (init?.method === 'PATCH') {
+      if (limited) {
+        limited = false;
+        return Response.json({ retry_after: 0.01 }, { status: 429 });
+      }
+      name = JSON.parse(String(init.body)).name;
+      patches.push(name);
+    }
+    return Response.json({ name });
+  };
+  const status = new DiscordThreadStatus('fixture', request);
+  const thread = 'discord:123:456:123456789012345678';
+  await status.set(thread, 'completed', 'Thread today');
+  await status.set(thread, 'blocked');
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  expect(patches).toEqual(['🔴 Thread today']);
 });

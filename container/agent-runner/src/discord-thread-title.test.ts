@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { generateThreadTitle, nameNewDiscordThread } from './discord-thread-title.js';
+import { initTestSessionDb, closeSessionDb } from './mailbox/sqlite/connection.js';
+import { getUndeliveredMessages } from './db/messages-out.js';
+import type { MessageInRow } from './db/messages-in.js';
+import { findThreadTitleRequest, generateThreadTitle, nameNewDiscordThread } from './discord-thread-title.js';
 
 const roots: string[] = [];
 const originalHome = process.env.HOME;
@@ -40,6 +43,25 @@ describe('ephemeral low-reasoning title request', () => {
     await expect(generateThreadTitle('Track tweets', undefined, executable('{"title":""}'))).rejects.toThrow('Discord limits');
   });
   it('does not generate titles for ordinary follow-ups without an initial-thread request', async () => {
-    await expect(nameNewDiscordThread([])).resolves.toBeUndefined();
+    await expect(nameNewDiscordThread(findThreadTitleRequest([]))).resolves.toBeUndefined();
   });
+});
+
+it('settles a failed generation with the original title in the durable mailbox', async () => {
+  initTestSessionDb();
+  const originalPath = process.env.PATH;
+  try {
+    const binary = executable('{"title":""}');
+    fs.renameSync(binary, path.join(path.dirname(binary), 'codex'));
+    process.env.PATH = `${path.dirname(binary)}:${originalPath}`;
+    const message = {
+      id: 'first-title', kind: 'chat', platform_id: 'discord:123:456', channel_type: 'discord',
+      thread_id: 'discord:123:456:123456789012345678',
+      content: JSON.stringify({ text: 'What day is it?', generateThreadTitle: 'Thread today' }),
+    } as MessageInRow;
+    await nameNewDiscordThread(findThreadTitleRequest([message]));
+    const titles = getUndeliveredMessages().filter((entry) => entry.kind === 'thread_title');
+    expect(titles).toHaveLength(1);
+    expect(JSON.parse(titles[0].content)).toEqual({ title: 'Thread today', initialName: 'Thread today' });
+  } finally { process.env.PATH = originalPath; closeSessionDb(); }
 });

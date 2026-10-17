@@ -92,6 +92,7 @@ type PendingTitle = {
   title?: string;
   initialName?: string;
   retryAt?: number;
+  titleDeadline?: number;
   dirty: boolean;
   resetBlocker?: boolean;
 };
@@ -119,12 +120,14 @@ export class DiscordThreadStatus {
 
   private schedule(thread: string): void {
     if (this.timers.has(thread)) return;
+    const entry = this.states[thread];
+    const titleDeadline = entry?.state === 'completed' && !entry.title ? entry.titleDeadline : undefined;
     const timer = setTimeout(
       () => {
         this.timers.delete(thread);
         void this.enqueue(thread).catch((error) => log.warn('Discord title retry failed', { err: error }));
       },
-      Math.max(1, (this.states[thread]?.retryAt ?? 0) - Date.now()),
+      Math.max(1, Math.max(entry?.retryAt ?? 0, titleDeadline ?? 0) - Date.now()),
     );
     timer.unref();
     this.timers.set(thread, timer);
@@ -154,6 +157,7 @@ export class DiscordThreadStatus {
     this.states[thread] = {
       ...this.states[thread],
       title: payload.title.trim(),
+      titleDeadline: undefined,
       initialName: payload.initialName,
       dirty: true,
     };
@@ -161,13 +165,14 @@ export class DiscordThreadStatus {
     return this.enqueue(thread);
   }
 
-  async set(thread: string, state: ThreadState): Promise<void> {
+  async set(thread: string, state: ThreadState, initialName?: string): Promise<void> {
     if (!/^discord:[0-9]+:[0-9]+:[0-9]{17,20}$/.test(thread)) return Promise.resolve();
     const previous = this.states[thread];
     if (state === 'completed' && previous?.state === 'blocked') return Promise.resolve();
-    if (state === previous?.state && !previous.dirty) return Promise.resolve();
+    if (!initialName && state === previous?.state && !previous.dirty) return Promise.resolve();
     this.states[thread] = {
       ...previous,
+      ...(initialName ? { initialName, titleDeadline: previous?.title ? undefined : Date.now() + 120_000 } : {}),
       state,
       dirty: true,
       resetBlocker: state === 'running' || previous?.resetBlocker,
@@ -177,8 +182,26 @@ export class DiscordThreadStatus {
   }
 
   private async apply(thread: string): Promise<void> {
+    const timer = this.timers.get(thread);
+    if (timer) {
+      clearTimeout(timer);
+      this.timers.delete(thread);
+    }
     let entry = this.states[thread];
     if (!entry?.dirty) return;
+    // A new thread already starts yellow. Wait for both the first result and
+    // its title, rather than spending two renames on the same completion.
+    if (entry.initialName && entry.state === 'running') return;
+    if (entry.initialName && entry.state === 'completed' && !entry.title) {
+      if ((entry.titleDeadline ?? 0) > Date.now()) {
+        this.schedule(thread);
+        return;
+      }
+      // The generator may have died after the answer was delivered. Settle
+      // with the existing name rather than retaining yellow indefinitely.
+      delete entry.initialName;
+      delete entry.titleDeadline;
+    }
     if ((entry.retryAt ?? 0) > Date.now()) {
       this.schedule(thread);
       return;
@@ -212,6 +235,7 @@ export class DiscordThreadStatus {
     const { name } = (await response.json()) as { name: string };
     // Inputs can arrive during the lookup. Apply the newest state, not a stale frame.
     entry = this.states[thread];
+    if (entry.initialName && (entry.state === 'running' || (entry.state === 'completed' && !entry.title))) return;
     if (entry.state === 'completed' && name.startsWith('🔴') && !entry.resetBlocker) entry.state = 'blocked';
     const base =
       entry.title && name.replace(STATUS_PREFIX, '') === entry.initialName?.replace(STATUS_PREFIX, '')
@@ -237,6 +261,7 @@ export class DiscordThreadStatus {
     delete entry.retryAt;
     delete entry.title;
     delete entry.initialName;
+    delete entry.titleDeadline;
     this.save();
   }
 }

@@ -169,6 +169,7 @@ registerChannelAdapter('discord', {
           needsInput?: boolean;
           type?: string;
           phase?: string;
+          initialThreadName?: string;
           replyTarget?: import('../mailbox/model.js').FeedbackTarget;
         };
         const needsInput = content.needsInput === true || content.type === 'ask_question';
@@ -184,7 +185,7 @@ registerChannelAdapter('discord', {
             ? phases[content.phase ?? '']
             : undefined;
         const statusUpdate = status
-          ? threadStatus.set(threadId ?? platformId, status).catch((error) => {
+          ? threadStatus.set(threadId ?? platformId, status, content.initialThreadName).catch((error) => {
               log.warn('Discord thread status could not be updated', { err: error });
             })
           : Promise.resolve();

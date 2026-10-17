@@ -39,28 +39,40 @@ export async function generateThreadTitle(message: string, signal?: AbortSignal,
   }
 }
 
+export function findThreadTitleRequest(messages: MessageInRow[]): { first: MessageInRow; initialName: string; text: string } | undefined {
+  for (const first of messages) {
+    try {
+      const content = JSON.parse(first.content);
+      if (typeof content.generateThreadTitle === 'string') {
+        return { first, initialName: content.generateThreadTitle, text: typeof content.text === 'string' ? content.text : '' };
+      }
+    } catch { /* Other inbound messages need not contain JSON. */ }
+  }
+}
+
 /** Called after the first reply; its durable result follows the normal delivery path. */
-export async function nameNewDiscordThread(messages: MessageInRow[], signal?: AbortSignal): Promise<void> {
-  const first = messages.find((message) => {
-    try { return typeof JSON.parse(message.content).generateThreadTitle === 'string'; } catch { return false; }
-  });
-  if (!first || signal?.aborted) return;
+export async function nameNewDiscordThread(request: ReturnType<typeof findThreadTitleRequest>, signal?: AbortSignal): Promise<void> {
+  if (!request || signal?.aborted) return;
+  const { first, initialName, text } = request;
   const routing = extractRouting([first]);
   if (routing.channelType !== 'discord' || !routing.threadId || routing.taskRun) return;
-  const content = JSON.parse(first.content);
-  const text = typeof content.text === 'string' ? content.text : '';
-  if (!text.trim()) return;
-  let title: string | undefined;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // Always settle the title request, even when generation cannot provide a
+  // better name, so completion is never left waiting on a missing outcome.
+  let title = initialName;
+  for (let attempt = 0; text.trim() && attempt < 2; attempt++) {
     if (signal?.aborted) return;
     try { title = await generateThreadTitle(text, signal); break; } catch (error) {
-      if (signal?.aborted || attempt === 1) throw error;
+      if (signal?.aborted) return;
+      if (attempt === 1) {
+        console.error(`Keeping original thread title: ${error instanceof Error ? error.message : String(error)}`);
+        break;
+      }
       await delay(2000, undefined, { signal });
     }
   }
   await writeMessageOut({
     id: `title-${first.id}`, kind: 'thread_title', in_reply_to: first.id,
     platform_id: routing.platformId, channel_type: routing.channelType, thread_id: routing.threadId,
-    content: JSON.stringify({ title, initialName: content.generateThreadTitle }),
+    content: JSON.stringify({ title, initialName }),
   });
 }

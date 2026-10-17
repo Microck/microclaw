@@ -673,6 +673,8 @@ export interface FeedbackTarget {
 export interface AgentProgress {
   phase: 'received' | 'tool' | 'completed' | 'failed' | 'cancelled';
   targets: FeedbackTarget[];
+  /** First-turn completion waits for this title request before renaming. */
+  initialThreadName?: string;
   tool?: { name: string; preview: string };
 }
 
@@ -702,5 +704,13 @@ export function parseAgentProgress(value: unknown): AgentProgress {
       progress.tool.preview.length > 240)
   )
     throw new Error('Invalid tool progress');
+  if (
+    progress.initialThreadName !== undefined &&
+    (progress.phase !== 'completed' ||
+      typeof progress.initialThreadName !== 'string' ||
+      !progress.initialThreadName.trim() ||
+      progress.initialThreadName.length > 100)
+  )
+    throw new Error('Invalid pending thread title');
   return progress;
 }

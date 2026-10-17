@@ -1,6 +1,6 @@
 import { transcribeDiscordAudio } from './audio-transcription.js';
 import { recallSupermemory, syncSupermemory } from './memory/supermemory.js';
-import { nameNewDiscordThread } from './discord-thread-title.js';
+import { findThreadTitleRequest, nameNewDiscordThread } from './discord-thread-title.js';
 import type { AgentProgress } from './mailbox/model.generated.js';
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
 import {
@@ -287,9 +287,11 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     const nameThread = () => {
       if (titleStarted || config.providerName !== 'codex') return;
       titleStarted = true;
-      void nameNewDiscordThread(keep, config.signal).catch((error) =>
+      const titleRequest = findThreadTitleRequest(keep);
+      void nameNewDiscordThread(titleRequest, config.signal).catch((error) =>
         log(`Thread title unavailable: ${error instanceof Error ? error.message : String(error)}`),
       );
+      return titleRequest?.initialName;
     };
     try {
       const result = await processQuery(
@@ -401,7 +403,7 @@ export async function processQuery(
    */
   midTurnCompleteDelivery = false,
   signal?: AbortSignal,
-  onReplyComplete?: () => void,
+  onReplyComplete?: () => string | void,
 ): Promise<QueryResult> {
   // adoptTurn mutates routing in place; keep the caller's batch route intact.
   routing = { ...routing };
@@ -748,8 +750,8 @@ export async function processQuery(
         if (feedbackFinished) {
           markCompleted(turnInputIds);
           syncSupermemory();
-          await publishAgentProgress(routing, feedbackPhase);
-          if (feedbackPhase === 'completed') onReplyComplete?.();
+          const initialThreadName = feedbackPhase === 'completed' ? onReplyComplete?.() : undefined;
+          await publishAgentProgress(routing, feedbackPhase, undefined, initialThreadName || undefined);
         }
         // Turn boundary: reset the per-turn sent count after the result's
         // nudge decision has used it. A nudge retry re-counts via its own
@@ -846,6 +848,7 @@ async function publishAgentProgress(
   routing: RoutingContext,
   phase: AgentProgress['phase'],
   tool?: { name: string; preview: string },
+  initialThreadName?: string,
 ): Promise<void> {
   if (
     routing.channelType !== 'discord' ||
@@ -864,6 +867,7 @@ async function publishAgentProgress(
       content: JSON.stringify({
         phase,
         targets: routing.feedbackTargets ?? [],
+        ...(initialThreadName ? { initialThreadName } : {}),
         ...(tool ? { tool: { name: tool.name, preview: tool.preview } } : {}),
       }),
     });

@@ -202,3 +202,17 @@ it('starts post-reply work before a reusable query stream closes', async () => {
   });
   expect(started).toBe(true);
 });
+
+it('publishes pending first-title metadata with completion without waiting for the title process', async () => {
+  const query: AgentQuery = {
+    push() {}, abort() {}, end() {},
+    events: (async function* (): AsyncGenerator<ProviderEvent> { yield { type: 'result', text: null }; })(),
+  };
+  let started = false;
+  await processQuery(query, routing, [], 'codex', undefined, 'prompt', undefined, false, undefined, () => {
+    started = true;
+    return 'Thread today';
+  });
+  expect(started).toBe(true);
+  expect(progress()).toEqual([{ phase: 'completed', targets: routing.feedbackTargets, initialThreadName: 'Thread today' }]);
+});
