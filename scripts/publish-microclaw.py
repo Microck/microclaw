@@ -139,6 +139,17 @@ pnpm exec vitest run --maxWorkers 1 --no-file-parallelism
     print('Candidate checks passed.', flush=True)
 
 
+def ensure_ci(checkout, repository):
+    print('Code is published; checking GitHub CI.', flush=True)
+    revision = run(checkout, 'git', 'rev-parse', 'refs/remotes/origin/main').decode().strip()
+    runs = json.loads(run(checkout, 'gh', 'run', 'list', '--repo', repository,
+                          '--workflow', 'ci.yml', '--commit', revision,
+                          '--limit', '1', '--json', 'databaseId'))
+    if not runs:
+        run(checkout, 'gh', 'workflow', 'run', 'ci.yml', '--repo', repository, '--ref', 'main')
+        print('Requested GitHub CI for the published branch.', flush=True)
+
+
 def publish(config):
     source = Path(config['source']).resolve()
     checkout = Path(config['checkout']).resolve()
@@ -161,6 +172,7 @@ def publish(config):
             raise ValueError('Cannot inspect upstream ancestry.')
         if previous == current and contained == 0:
             print('Public main is current; nothing to publish.', flush=True)
+            ensure_ci(checkout, config['repository'])
             return
         # Raw local objects stay private. Only the sanitized candidate bookmark
         # is ever pushed; source commits are never parents of public commits.
@@ -178,6 +190,7 @@ def publish(config):
         jj(checkout, 'bookmark', 'set', 'main', '-r', '@')
         jj(checkout, 'git', 'push', '--remote', 'origin', '--bookmark', 'main')
         print('Published checked MicroClaw update.', flush=True)
+        ensure_ci(checkout, config['repository'])
 
 
 if __name__ == '__main__':
@@ -186,7 +199,7 @@ if __name__ == '__main__':
     except (subprocess.CalledProcessError, ValueError, BlockingIOError, subprocess.TimeoutExpired) as error:
         # Command stderr can contain sensitive diagnostics; retain it only in
         # the private local journal and never include raw scanner values.
-        print(f'Publication stopped: {error}', file=sys.stderr)
+        print(f'MicroClaw automation stopped: {error}', file=sys.stderr)
         if isinstance(error, subprocess.CalledProcessError) and error.stderr:
             print(error.stderr.decode(errors='replace'), file=sys.stderr)
         sys.exit(1)
