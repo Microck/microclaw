@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   pull_request:
     branches: [main]
   # A post-merge run on main, so main itself carries a verdict and not only the
