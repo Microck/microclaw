@@ -78,7 +78,17 @@ class PublicationTest(unittest.TestCase):
         publisher.run(self.source, 'git', 'tag', '-a', 'v2026.10.0', '-m', 'stable')
         publisher.run(self.source, 'git', 'tag', 'v2026.11.0-rc.1')
         publisher.run(self.public, 'git', 'remote', 'add', 'upstream', str(self.source))
-        self.assertEqual(publisher.stable_release(self.public), self.before)
+        self.assertEqual(publisher.fetch_stable_release(self.public), self.before)
+
+    def test_new_stable_commit_is_visible_to_jujutsu_and_can_be_merged(self):
+        (self.source / 'release.txt').write_text('new stable release\n')
+        revision = self.commit('upstream release')
+        publisher.run(self.source, 'git', 'tag', '-a', 'v2026.10.1', '-m', 'stable')
+        publisher.run(self.public, 'git', 'remote', 'add', 'upstream', str(self.source))
+        self.assertEqual(publisher.fetch_stable_release(self.public), revision)
+        publisher.jj(self.public, 'new', '@', revision)
+        publisher.assert_no_conflicts(self.public)
+        self.assertEqual((self.public / 'release.txt').read_text(), 'new stable release\n')
 
     def test_missing_marker_requires_explicit_baseline(self):
         with self.assertRaisesRegex(ValueError, 'audited source baseline'):

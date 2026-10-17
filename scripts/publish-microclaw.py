@@ -47,7 +47,7 @@ def apply_source_delta(source, checkout, previous, current):
     jj(checkout, 'status')
 
 
-def stable_release(checkout):
+def fetch_stable_release(checkout):
     tags = run(checkout, 'git', 'ls-remote', '--tags', 'upstream').decode()
     releases = []
     for line in tags.splitlines():
@@ -58,7 +58,10 @@ def stable_release(checkout):
                              bool(match[4]), sha))
     if not releases:
         raise ValueError('Upstream has no stable version tags.')
-    return max(releases)[2]
+    revision = max(releases)[2]
+    run(checkout, 'git', 'fetch', '--no-tags', 'upstream',
+        f'+{revision}:refs/remotes/upstream/stable-release')
+    return revision
 
 
 def assert_no_conflicts(checkout):
@@ -162,8 +165,7 @@ def publish(config):
         current = jj(source, 'log', '-r', config['source_revision'], '--no-graph', '-T', 'commit_id')
         jj(checkout, 'git', 'fetch', '--remote', 'origin', '--branch', 'main')
         previous = source_marker(checkout)
-        upstream = stable_release(checkout)
-        run(checkout, 'git', 'fetch', '--no-tags', 'upstream', upstream)
+        upstream = fetch_stable_release(checkout)
         contained = subprocess.run(
             ('git', 'merge-base', '--is-ancestor', upstream, 'refs/remotes/origin/main'),
             cwd=checkout, check=False,
