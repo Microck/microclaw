@@ -62,7 +62,14 @@ describe('official Iron Control installation', () => {
     const labels = { [LABELS.install]: getInstallSlug(root), [LABELS.role]: GATEWAY_ROLE };
     expect(config.services.web.labels).toEqual(labels);
     expect(config.services.database.labels).toEqual(labels);
-    expect(Object.keys(config.services.web).slice(0, 4)).toEqual(['image', 'platform', 'restart', 'labels']);
+    expect(Object.keys(config.services.web).slice(0, 5)).toEqual([
+      'image',
+      'platform',
+      'oom_score_adj',
+      'restart',
+      'labels',
+    ]);
+    expect(config.services.web.oom_score_adj).toBe(-500);
     expect(config.volumes.database).toEqual({});
     expect(config.networks.default).toEqual({ name: controlPaths(root).network });
   });

@@ -346,6 +346,7 @@ async function drainSession(session: Session, signal: AbortSignal): Promise<void
       await finalizeDelivery(msg.id);
       if (
         msg.kind !== 'system' &&
+        msg.kind !== 'agent_observation' &&
         msg.kind !== 'agent_progress' &&
         msg.kind !== 'thread_title' &&
         msg.channelType !== 'agent'
@@ -428,6 +429,9 @@ async function deliverMessage(
   session: Session,
   senderName: string,
 ): Promise<string | undefined> {
+  // Internal bounded tool results are consumed from the durable mailbox by
+  // background review. They must never become user messages or context echoes.
+  if (msg.kind === 'agent_observation') return;
   if (!deliveryAdapter) {
     log.warn('No delivery adapter configured, dropping message', { id: msg.id });
     return;

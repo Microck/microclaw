@@ -53,8 +53,9 @@ it('cancels active and steered inputs, keeps history, and preserves later input 
       { id: 'plain', status: 'cancelled' },
       { id: 'later', status: 'pending' },
       { id: 'reminder', status: 'pending' },
+      { id: 'proactive-stop-2026-10-15T11:01:00.000Z', status: 'completed' },
     ]);
-    expect(mailbox.getInboundHistory(20)).toHaveLength(6);
+    expect(mailbox.getInboundHistory(20)).toHaveLength(7);
   } finally {
     db.close();
   }

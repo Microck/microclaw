@@ -20,8 +20,32 @@ function createCodexProvider(...args: ConstructorParameters<typeof CodexProvider
 }
 
 describe('CodexProvider active turns', () => {
+  it('keeps child notifications from completing, steering or overwriting the parent', async () => {
+    const fake = createFakeCodexRuntime();
+    const provider = createCodexProvider({}, fake.runtime);
+    const query = provider.query({ prompt: 'delegate work', cwd: '/workspace/agent' });
+    const events: ProviderEvent[] = [];
+    const collect = collectEvents(query.events, events);
+    await waitFor(() => fake.startCalls.length === 1);
+    fake.notify('turn/started', { threadId: 'child', turn: { id: 'child-turn' } });
+    fake.notify('item/agentMessage/delta', { threadId: 'child', delta: 'private child answer' });
+    fake.notify('item/completed', { threadId: 'child', item: { type: 'agentMessage', text: 'private child answer' } });
+    fake.notify('turn/completed', {
+      threadId: 'child',
+      turn: { items: [{ type: 'agentMessage', text: 'private child answer' }] },
+    });
+    await sleep(20);
+    expect(events.filter((event) => event.type === 'result')).toHaveLength(0);
+    expect(await query.push('follow up')).toBe('steered');
+    expect(fake.steerCalls.at(-1)?.turnId).toBe('turn-1');
+    query.end();
+    fake.completeTurn('parent answer');
+    await collect;
+    expect(events.filter((event) => event.type === 'result')).toEqual([{ type: 'result', text: 'parent answer' }]);
+  });
+
   it('keeps an active turn alive beyond the inactivity deadline', async () => {
-    const fake = createFakeCodexRuntime({ idleTimeoutMs: 500 });
+    const fake = createFakeCodexRuntime({ quietNoticeAfterMs: 500 });
     const provider = createCodexProvider({}, fake.runtime);
     const query = provider.query({ prompt: 'long task', cwd: '/workspace/agent' });
     const events: ProviderEvent[] = [];
@@ -38,14 +62,41 @@ describe('CodexProvider active turns', () => {
     expect(events.filter((event) => event.type === 'result')).toEqual([{ type: 'result', text: 'done' }]);
   });
 
-  it('ends a silent provider turn and cleans up its process', async () => {
-    const fake = createFakeCodexRuntime({ idleTimeoutMs: 50 });
+  it('keeps a silent turn alive beyond the notice interval and still stops immediately', async () => {
+    const fake = createFakeCodexRuntime({ quietNoticeAfterMs: 50 });
     const provider = createCodexProvider({}, fake.runtime);
-    const query = provider.query({ prompt: 'silent task', cwd: '/workspace/agent' });
+    const query = provider.query({ prompt: 'wait for a long quiet tool', cwd: '/workspace/agent' });
     const events: ProviderEvent[] = [];
-    await expect(collectEvents(query.events, events)).rejects.toThrow('Codex sent no activity for 50ms');
+    const collect = collectEvents(query.events, events);
+    await waitFor(() => fake.startCalls.length === 1);
+    await sleep(180);
+    expect(fake.killed).toBe(false);
+    expect(events.some((event) => event.type === 'progress' && event.message.includes('continuing to wait'))).toBe(
+      true,
+    );
+    expect(events.filter((event) => event.type === 'activity').length).toBeGreaterThanOrEqual(2);
+    expect(events.filter((event) => event.type === 'error')).toHaveLength(0);
+    query.abort();
+    await collect;
+    expect(fake.interruptCalls).toHaveLength(1);
     expect(fake.killed).toBe(true);
-    expect(events.filter((event) => event.type === 'error')).toHaveLength(1);
+  });
+
+  it('accepts a completed long quiet turn without asking the user to continue', async () => {
+    const fake = createFakeCodexRuntime({ quietNoticeAfterMs: 30 });
+    const provider = createCodexProvider({}, fake.runtime);
+    const query = provider.query({ prompt: 'wait then finish', cwd: '/workspace/agent' });
+    const events: ProviderEvent[] = [];
+    const collect = collectEvents(query.events, events);
+    await waitFor(() => fake.startCalls.length === 1);
+    await sleep(120);
+    query.end();
+    fake.completeTurn('finished after waiting');
+    await collect;
+    expect(events.filter((event) => event.type === 'result')).toEqual([
+      { type: 'result', text: 'finished after waiting' },
+    ]);
+    expect(events.filter((event) => event.type === 'error')).toHaveLength(0);
   });
 
   it('delivers late search details once and labels reported skill loads', async () => {
@@ -248,7 +299,7 @@ describe('CodexProvider active turns', () => {
 
     // No pending request exists mid-turn (turn/start already resolved), so
     // only the exitHandlers seam can end the turn — without it this parks
-    // on the waker until the 10-minute turn timeout.
+    // on the waker without an event to finish the turn.
     fake.crashServer(new Error('Codex app-server exited: code=1 signal=null'));
 
     // The generator yields the error event, then rethrows to its consumer.
@@ -260,7 +311,7 @@ describe('CodexProvider active turns', () => {
   });
 });
 
-function createFakeCodexRuntime(opts: { rejectSteer?: boolean; idleTimeoutMs?: number } = {}) {
+function createFakeCodexRuntime(opts: { rejectSteer?: boolean; quietNoticeAfterMs?: number } = {}) {
   const server = fakeServer();
   const startCalls: TurnParams[] = [];
   const steerCalls: Array<{ threadId: string; turnId: string; inputText: string }> = [];
@@ -273,7 +324,7 @@ function createFakeCodexRuntime(opts: { rejectSteer?: boolean; idleTimeoutMs?: n
   };
 
   const runtime: CodexRuntimeDeps = {
-    turnIdleTimeoutMs: opts.idleTimeoutMs ?? 600_000,
+    quietNoticeAfterMs: opts.quietNoticeAfterMs ?? 600_000,
     writeCodexConfigToml: () => {},
     spawnCodexAppServer: () => server,
     attachCodexAutoApproval: () => {},

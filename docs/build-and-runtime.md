@@ -21,6 +21,12 @@ Host and container each have their own package tree:
 
 The container image also has pnpm + Node inside for global CLIs (`@anthropic-ai/claude-code`, `agent-browser`, `vercel`). Those are Node binaries the agent invokes at runtime, not library deps. Keeping them on pnpm preserves the supply-chain policy for CLI versions.
 
+## Codex version policy
+
+Codex uses an exact version pin so installs remain repeatable. Updates advance to the latest stable release after integration checks, rather than installing an untested `latest` on each session start. The current tested target is `@openai/codex` 0.163.0. Keep the add-codex skill, global CLI manifest, agent-runner dependency and generated pin metadata aligned.
+
+ChatGPT authentication stubs carry the connected workspace identifier because Codex validates it against authenticated routing discovery. Access and refresh tokens remain inside Iron. ChatGPT connection metadata must include `accountId`; reconnect Codex if it is absent.
+
 ## Lockfiles
 
 | Tree | Lockfile | Manager | Regenerate after dep change |
@@ -67,6 +73,8 @@ Both paths end with Bun running the same source file from `/app/src/index.ts`.
 
 Any failure fails the PR.
 
+Container tests fail before loading the suite when `CODEX_HOME` is inherited. This prevents tests that create a temporary `HOME` from writing to the operator's real Codex directory. From a Codex-launched shell, use `env -u CODEX_HOME bun test --isolate` inside `container/agent-runner/`, or run the checks in an isolated workspace. Production runners do not load the test preload.
+
 ## Key invariants
 
 - **Session DBs must use `journal_mode=DELETE`.** WAL's `-shm` memory-map doesn't cross VirtioFS between host and guest. See `container/agent-runner/src/mailbox/sqlite/connection.ts` and `src/mailbox/sqlite/session-db.ts`.
@@ -78,3 +86,4 @@ Any failure fails the PR.
 ## Migration history
 
 This structure replaced a uniform npm-on-Node stack across both host and container. The pnpm migration landed first (PR #1771) to bring the host under supply-chain policy, then the container moved to Bun to eliminate native-module compilation and the per-wake tsc step. The split was chosen over going full-Bun because Baileys' native deps are the main risk surface on the host — the container has no such deps, so it benefits from Bun without taking the risk.
+

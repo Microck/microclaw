@@ -1,3 +1,5 @@
+import { describeModelSelection, isModelCommand, openingModelRequest } from './model-selection.js';
+import { commandText, withoutBotSuffix } from './slash-command.generated.js';
 import { transcribeDiscordAudio } from './audio-transcription.js';
 import { recallSupermemory, syncSupermemory } from './memory/supermemory.js';
 import { findThreadTitleRequest, nameNewDiscordThread } from './discord-thread-title.js';
@@ -46,6 +48,22 @@ const MAILBOX_FAILURE_STREAK_EXIT = 10;
 
 function log(msg: string): void {
   console.error(`[poll-loop] ${msg}`);
+}
+
+/** Channel-safe diagnoses: raw provider errors can contain credentials or private URLs. */
+export function providerFailureNotice(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  let reason: string;
+  if (/required MCP servers failed to initialize|timed out handshaking/i.test(message)) {
+    reason = 'The assistant could not start its tools.';
+  } else if (/routing discovery|socket hang up|ECONNRESET|ETIMEDOUT|fetch failed/i.test(message)) {
+    reason = 'The connection to the model failed.';
+  } else if (/Codex sent no activity for/i.test(message)) {
+    reason = 'The model stopped responding for ten minutes.';
+  } else {
+    return 'The agent run failed. Check the logs for details.';
+  }
+  return `${reason} This turn stopped; earlier actions may have completed. Send "continue" to resume from the conversation. Diagnostics are in the logs.`;
 }
 
 function generateId(): string {
@@ -101,6 +119,17 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
   // other providers may reload a thread ID, etc.). Keyed per-provider so
   // a Codex thread id never gets handed to Claude or vice versa.
   let continuation: string | undefined = migrateLegacyContinuation(config.providerName);
+
+  let modelLoaded = false;
+  const modelStateKey = `inference:${config.providerName}`;
+  const selectModel = async (request?: string) => {
+    if (!config.provider.configureModel) throw new Error('This provider does not support /model.');
+    const saved = !modelLoaded ? getAgentMailbox().operations.getState(modelStateKey)?.value : undefined;
+    const selection = await config.provider.configureModel(request || saved);
+    if (request) getAgentMailbox().operations.setState(modelStateKey, `${selection.model} ${selection.effort}`);
+    modelLoaded = true;
+    return selection;
+  };
 
   // Before resuming, drop a session whose on-disk transcript has grown too
   // large/old to cold-resume within the host's idle ceiling. Without this a
@@ -168,8 +197,31 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // the runner handles directly is /clear (session reset).
     const normalMessages: MessageInRow[] = [];
     const commandIds: string[] = [];
+    const failedCommands = new Set<string>();
 
     for (const msg of messages) {
+      if (isModelCommand(msg)) {
+        const request = withoutBotSuffix(commandText(msg.content)).slice('/model'.length).trim();
+        let text: string;
+        try {
+          text = describeModelSelection(await selectModel(request || undefined), Boolean(request));
+        } catch (error) {
+          text = `Model request failed: ${error instanceof Error ? error.message : String(error)}`;
+          failedCommands.add(msg.id);
+        }
+        const target = extractRouting([msg]);
+        await writeMessageOut({
+          id: generateId(),
+          kind: 'chat',
+          in_reply_to: msg.id,
+          platform_id: target.platformId,
+          channel_type: target.channelType,
+          thread_id: target.threadId,
+          content: JSON.stringify({ text, ...(failedCommands.has(msg.id) ? { needsInput: true } : {}) }),
+        });
+        commandIds.push(msg.id);
+        continue;
+      }
       if ((msg.kind === 'chat' || msg.kind === 'chat-sdk') && isClearCommand(msg)) {
         log('Clearing session (resetting continuation)');
         continuation = undefined;
@@ -205,7 +257,10 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
     if (commandIds.length > 0) {
       markCompleted(commandIds);
-      await publishAgentProgress(extractRouting(messages.filter((m) => commandIds.includes(m.id))), 'completed');
+      const succeeded = messages.filter((m) => commandIds.includes(m.id) && !failedCommands.has(m.id));
+      if (succeeded.length) await publishAgentProgress(extractRouting(succeeded), 'completed');
+      if (failedCommands.size)
+        await publishAgentProgress(extractRouting(messages.filter((m) => failedCommands.has(m.id))), 'failed');
     }
 
     if (normalMessages.length === 0) {
@@ -239,6 +294,31 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     }
 
     await transcribeDiscordAudio(keep, config.signal);
+
+    const requestedModel = !continuation && config.providerName === 'codex' ? openingModelRequest(keep) : undefined;
+    const savedModel = !modelLoaded ? getAgentMailbox().operations.getState(modelStateKey)?.value : undefined;
+    if (requestedModel || savedModel) {
+      try {
+        const selection = await selectModel(requestedModel || savedModel);
+        log(`Selected ${selection.model}, ${selection.effort} thinking for this conversation`);
+      } catch (error) {
+        await writeMessageOut({
+          id: generateId(),
+          kind: 'chat',
+          in_reply_to: keep[0].id,
+          platform_id: routing.platformId,
+          channel_type: routing.channelType,
+          thread_id: routing.threadId,
+          content: JSON.stringify({
+            text: `Model request failed: ${error instanceof Error ? error.message : String(error)} Use /model to choose another model, then resend your request.`,
+            needsInput: true,
+          }),
+        });
+        markCompleted(keep.map((message) => message.id));
+        await publishAgentProgress(extractRouting(keep), 'failed');
+        continue;
+      }
+    }
 
     // Format messages: passthrough commands get raw text (only if the
     // provider natively handles slash commands), others get XML.
@@ -520,6 +600,8 @@ export async function processQuery(
         // not end: end() lets an in-flight turn run to completion, which
         // can block the command (e.g. /clear during a long task) for as
         // long as the turn takes.
+        // Model changes are a turn boundary: finish the answer before switching.
+        if (answering && pending.some(isModelCommand)) return;
         if (pending.some((m) => isRunnerCommand(m, providerName))) {
           log('Pending slash command — aborting active stream so outer loop can process');
           endedForCommand = true;
@@ -637,6 +719,21 @@ export async function processQuery(
       handleEvent(event, routing);
       touchHeartbeat();
       if (event.type === 'tool') await publishAgentProgress(routing, 'tool', event);
+      if (event.type === 'observation') {
+        try {
+          await writeMessageOut({
+            id: generateId(),
+            in_reply_to: routing.inReplyTo,
+            kind: 'agent_observation',
+            platform_id: routing.platformId,
+            channel_type: routing.channelType,
+            thread_id: routing.threadId,
+            content: JSON.stringify({ name: event.name, result: event.result }),
+          });
+        } catch {
+          log('Background observation could not be recorded');
+        }
+      }
 
       if (event.type === 'init') {
         queryContinuation = event.continuation;
@@ -806,7 +903,7 @@ export async function processQuery(
           continue;
         noticed.push(target);
         try {
-          await deliverErrorResult(target, 'The agent run failed. Check the logs for details.');
+          await deliverErrorResult(target, providerFailureNotice(err));
         } catch (noticeError) {
           log(
             `Failed to deliver query error notice: ${noticeError instanceof Error ? noticeError.message : String(noticeError)}`,

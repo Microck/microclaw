@@ -136,7 +136,7 @@ Use the existing provider-auth entry point after `/add-codex` installs the
 provider. Browser sign-in, device pairing, and API-key entry are the same for
 all gateways; `scripts/credential-store.ts` supplies Iron's custody adapter.
 Iron Control stores API keys and manages subscription refresh-token rotation
-through its native broker. Agents receive only a synthetic `auth.json` file.
+through its native broker. Agents receive an `auth.json` token stub with the real, non-secret workspace identifier required by Codex routing discovery. Access and refresh tokens remain in Iron.
 A subscription login uses a new, dedicated Codex session; never copy personal
 Codex credentials. The setup flow and provider picker stay unchanged.
 

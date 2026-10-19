@@ -10,3 +10,6 @@ onlyBuiltDependencies:
 # a no-op. New package versions must exist on the registry this many minutes
 # (4320 = 3 days) before pnpm will resolve them.
 minimumReleaseAge: 4320
+
+patchedDependencies:
+  '@discordjs/ws@1.2.3': patches/discordjs-ws-1.2.3.patch

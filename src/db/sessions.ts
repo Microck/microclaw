@@ -144,6 +144,15 @@ export async function findTaskSessions(agentGroupId: string, includeClosed = fal
   );
 }
 
+/** Include recently finished task runs long enough for background activity collection. */
+export async function getSessionsForActivityReview(since: string): Promise<Session[]> {
+  return getDb().all<Session>(
+    `SELECT * FROM sessions WHERE status='active'
+    OR (messaging_group_id IS NULL AND thread_id LIKE 'system:tasks:%' AND last_active>=?)`,
+    since,
+  );
+}
+
 export async function getActiveSessions(): Promise<Session[]> {
   return getDb().all<Session>("SELECT * FROM sessions WHERE status = 'active'");
 }

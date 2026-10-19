@@ -3,6 +3,7 @@ import path from 'path';
 import { spawn, type ChildProcess } from 'child_process';
 import { createInterface, type Interface as ReadlineInterface } from 'readline';
 
+import { AGENT_DIR, SESSION_CONTEXT_PATH, SESSION_DIR } from '../runtime-paths.js';
 import type { McpServerConfig } from './types.js';
 
 // Cap Codex's project-doc loading (AGENTS.md). The host-side composer
@@ -18,6 +19,32 @@ function log(msg: string): void {
 const INIT_TIMEOUT_MS = 120_000;
 
 export const CODEX_APP_SERVER_ARGS = ['--dangerously-bypass-hook-trust', 'app-server', '--listen', 'stdio://'] as const;
+
+/**
+ * Keep the built-in MCP server pointed at this NanoClaw session. Codex's
+ * config.toml lives in a per-group CODEX_HOME, so its session-specific env
+ * values can be overwritten by a concurrent session before app-server reads
+ * them. CLI config overrides are process-local and leave shared Codex history
+ * and the rest of the group config intact.
+ */
+export function buildCodexAppServerArgs(paths: {
+  agentDir: string;
+  sessionDir: string;
+  contextPath: string;
+}): string[] {
+  const overrides = [
+    ['NANOCLAW_AGENT_DIR', paths.agentDir],
+    ['NANOCLAW_SESSION_DIR', paths.sessionDir],
+    ['NANOCLAW_CONTEXT_PATH', paths.contextPath],
+  ] as const;
+  const args: string[] = [...CODEX_APP_SERVER_ARGS];
+  args.splice(
+    2,
+    0,
+    ...overrides.flatMap(([key, value]) => ['--config', `mcp_servers.nanoclaw.env.${key}=${tomlBasicString(value)}`]),
+  );
+  return args;
+}
 
 export interface CodexMemorySessionHook {
   readonly command: string;
@@ -140,7 +167,11 @@ export interface TurnParams {
 export function spawnCodexAppServer(): AppServer {
   // NanoClaw generates the hook config and has no interactive user available
   // to approve hook trust inside the container.
-  const args = [...CODEX_APP_SERVER_ARGS];
+  const args = buildCodexAppServerArgs({
+    agentDir: AGENT_DIR,
+    sessionDir: SESSION_DIR,
+    contextPath: SESSION_CONTEXT_PATH,
+  });
   log(`Spawning: codex ${args.join(' ')}`);
 
   const proc = spawn('codex', args, {
@@ -278,6 +309,39 @@ export async function initializeCodexAppServer(server: AppServer): Promise<void>
   );
   if (resp.error) throw new Error(`initialize failed: ${resp.error.message}`);
   sendCodexNotification(server, 'initialized');
+}
+
+/** Account-scoped discovery, including every page, without opening a conversation. */
+export async function listCodexModels(server: AppServer): Promise<import('../model-selection.js').AvailableModel[]> {
+  const models: import('../model-selection.js').AvailableModel[] = [];
+  let cursor: string | undefined;
+  do {
+    const response = await sendCodexRequest(server, 'model/list', {
+      limit: 100,
+      includeHidden: true,
+      ...(cursor ? { cursor } : {}),
+    });
+    if (response.error) throw new Error(`Model discovery failed: ${response.error.message}`);
+    const page = response.result as {
+      data?: import('../model-selection.js').AvailableModel[];
+      nextCursor?: string | null;
+    };
+    if (
+      !Array.isArray(page?.data) ||
+      page.data.some(
+        (entry) =>
+          typeof entry.model !== 'string' ||
+          typeof entry.id !== 'string' ||
+          !Array.isArray(entry.supportedReasoningEfforts) ||
+          entry.supportedReasoningEfforts.some((effort) => typeof effort.reasoningEffort !== 'string'),
+      )
+    ) {
+      throw new Error('Codex returned an invalid model catalog.');
+    }
+    models.push(...page.data);
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor);
+  return models;
 }
 
 export const codexTone = {
@@ -534,10 +598,13 @@ export function renderCodexConfigToml(plan: CodexConfigPlan, nativeHost = false)
   // memory disabled even if its defaults or a user-level config change.
   lines.push('[features]');
   lines.push(`memories = ${plan.memory.memories}`);
+  lines.push('sleep_tool = true');
   // The pinned CLI restores snapshot proxy exports after shell policy filtering.
   // Native commands need host networking; only model requests use the gateway.
   if (nativeHost) lines.push('shell_snapshot = false');
   lines.push('');
+  // Bound child fan-out on the shared host without changing the chosen parent model.
+  lines.push('[agents]', 'enabled = true', 'max_concurrent_threads_per_session = 2', '');
   lines.push('[memories]');
   lines.push(`use_memories = ${plan.memory.useMemories}`);
   lines.push(`generate_memories = ${plan.memory.generateMemories}`);

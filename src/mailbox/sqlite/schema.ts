@@ -1,3 +1,10 @@
+/** Activity queries share these indexes with ordinary due-work admission. */
+export const INBOUND_ACTIVITY_INDEXES = `CREATE INDEX IF NOT EXISTS idx_messages_in_active
+  ON messages_in(status,trigger,process_after) WHERE trigger=1 AND status IN ('pending','processing');`;
+export const OUTBOUND_ACTIVITY_INDEXES = `CREATE INDEX IF NOT EXISTS idx_processing_active
+  ON processing_ack(status) WHERE status='processing';
+  CREATE INDEX IF NOT EXISTS idx_processing_finished ON processing_ack(status_changed DESC) WHERE status!='processing';`;
+
 /** Host-owned SQLite mailbox schema. */
 export const INBOUND_SCHEMA = `
 CREATE TABLE IF NOT EXISTS messages_in (
@@ -19,6 +26,8 @@ CREATE TABLE IF NOT EXISTS messages_in (
   on_wake        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_messages_in_series ON messages_in(series_id);
+
+${INBOUND_ACTIVITY_INDEXES}
 
 CREATE TABLE IF NOT EXISTS delivered (
   message_out_id      TEXT PRIMARY KEY,
@@ -65,6 +74,8 @@ CREATE TABLE IF NOT EXISTS processing_ack (
   status         TEXT NOT NULL,
   status_changed TEXT NOT NULL
 );
+
+${OUTBOUND_ACTIVITY_INDEXES}
 
 CREATE TABLE IF NOT EXISTS session_state (
   key        TEXT PRIMARY KEY,

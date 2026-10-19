@@ -137,7 +137,14 @@ export function createMcpServer(
     if (!tool) {
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }] };
     }
-    return run(() => tool.handler(args ?? {}, { signal: context.signal }));
+    try {
+      return await run(() => tool.handler(args ?? {}, { signal: context.signal }));
+    } catch (error) {
+      // MCP returns only the error message to Codex. Keep the failing operation
+      // and stack in private stderr without logging tool arguments.
+      log(`Tool ${name} failed: ${error instanceof Error ? error.stack : String(error)}`);
+      throw error;
+    }
   });
   return server;
 }

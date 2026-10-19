@@ -96,7 +96,8 @@ it('delegates refresh rotation to the native Iron broker and grants only derived
     expect.objectContaining({ source: { source_type: 'token_broker', config: { credential_id: 'bcr_test' } } }),
   );
   const local = fs.readFileSync(path.join(root, 'codex.json'), 'utf8');
-  expect(local).not.toMatch(/fixture-(refresh|access|account)/);
+  expect(local).not.toMatch(/fixture-(refresh|access)/);
+  expect(JSON.parse(local).accountId).toBe('fixture-account');
 });
 it('does not claim a dead broker is connected', async () => {
   const root = fixture();

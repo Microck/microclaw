@@ -8,7 +8,16 @@ import type { MemorySessionHookRegistration } from '../memory/session-hook.js';
  */
 export type ProviderSpeed = string;
 
+export interface ModelSelection {
+  model: string;
+  effort: string;
+  available: Array<{ model: string; efforts: string[] }>;
+}
+
 export interface AgentProvider {
+  /** Inspect or change inference settings without starting a model turn. */
+  configureModel?(request?: string): Promise<ModelSelection>;
+
   /**
    * Register shared memory through the provider's native session-start
    * mechanism. `memory` is the contract's resolved memory capability (core
@@ -180,10 +189,12 @@ export type ProviderEvent =
   | { type: 'error'; message: string; retryable: boolean; classification?: string }
   | { type: 'progress'; message: string }
   | { type: 'tool'; name: string; preview: string }
+  | { type: 'observation'; name: string; result: string }
   | { type: 'file'; path: string }
   /**
    * Liveness signal. Providers MUST yield this on every underlying SDK
    * event (tool call, thinking, partial message, anything) so the
-   * poll-loop's idle timer stays honest during long tool runs.
+   * poll-loop's idle timer stays honest during long tool runs. A live provider
+   * may also emit keepalives during quiet waits; these are not model progress.
    */
   | { type: 'activity' };

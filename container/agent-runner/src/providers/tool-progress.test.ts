@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { codexToolProgress, toolPreview } from './tool-progress.js';
+import { codexToolProgress, codexToolObservation, toolPreview, commandPreview } from './tool-progress.js';
 
 describe('Codex tool activity', () => {
   it('uses actual command and MCP item data without exposing outputs or arbitrary arguments', () => {
@@ -104,4 +104,55 @@ describe('Codex tool activity', () => {
       })?.name,
     ).toBe('terminal');
   });
+});
+
+it('records bounded completed tool results and drops images, reasoning and credentials', () => {
+  const command = codexToolObservation({
+    type: 'commandExecution',
+    command: 'pnpm build',
+    status: 'completed',
+    exitCode: 1,
+    aggregatedOutput: 'build failed. API_KEY=private-value',
+  });
+  expect(command?.result).toContain('build failed');
+  expect(command?.result).not.toContain('private-value');
+  expect(command?.result).toContain('exitCode');
+  expect(codexToolObservation({ type: 'reasoning', text: 'private thoughts' })).toBeUndefined();
+  const mcp = codexToolObservation({
+    type: 'mcpToolCall',
+    server: 'web',
+    tool: 'fetch',
+    result: {
+      content: [
+        { type: 'image', data: 'PRIVATE_IMAGE' },
+        { type: 'text', text: 'Relevant result' },
+      ],
+    },
+  });
+  expect(mcp?.result).toContain('Relevant result');
+  expect(mcp?.result).not.toContain('PRIVATE_IMAGE');
+  expect(
+    codexToolObservation({ type: 'commandExecution', command: 'x', aggregatedOutput: 'x'.repeat(100000) })!.result
+      .length,
+  ).toBeLessThanOrEqual(8000);
+});
+
+it('unwraps quoted shell previews before truncation without evaluating them', () => {
+  expect(commandPreview("/bin/bash -lc 'git status --short'")).toBe('git status --short');
+  expect(commandPreview('/bin/sh -lc "echo $(touch /tmp/never-executed)"')).toBe('echo $(touch /tmp/never-executed)');
+  expect(commandPreview("/bin/bash -lc '" + 'x'.repeat(300) + "'")).toBe('x'.repeat(220));
+  expect(commandPreview('bash --unknown something')).toBe('bash --unknown something');
+});
+
+it('shows subagent lifecycle without child prompts or results', () => {
+  expect(
+    codexToolProgress({
+      type: 'collabAgentToolCall',
+      tool: 'spawnAgent',
+      status: 'completed',
+      receiverThreadIds: ['child'],
+      prompt: 'private prompt',
+      agentsStates: { child: { status: 'completed', message: 'private result' } },
+    }),
+  ).toEqual({ type: 'tool', name: 'subagent: spawnAgent', preview: '1 agent · completed' });
 });

@@ -45,7 +45,7 @@ export function isFailureNotice(msg: MessageInRow): boolean {
 export type CommandCategory = 'admin' | 'filtered' | 'passthrough' | 'none';
 
 /** Commands the runner itself handles, whatever provider is active. */
-const RUNNER_ADMIN_COMMANDS = ['/clear', '/upload-trace'];
+const RUNNER_ADMIN_COMMANDS = ['/clear', '/upload-trace', '/model'];
 
 interface CommandSets {
   admin: ReadonlySet<string>;

@@ -5,7 +5,7 @@ import { getUndeliveredMessages } from './db/messages-out.js';
 import { getCurrentReplyRoute, getContinuation, setContinuation } from './db/session-state.js';
 import { getAgentMailbox } from './mailbox/index.js';
 import { closeSessionDb, getInboundDb, initTestSessionDb } from './mailbox/sqlite/connection.js';
-import { runPollLoop } from './poll-loop.js';
+import { providerFailureNotice, runPollLoop } from './poll-loop.js';
 import type { AgentProvider, ProviderEvent, ProviderExchange } from './providers/types.js';
 
 const CONTRACT = { textDelivery: 'mid-turn-complete', commands: { formatting: 'xml' } } as const;
@@ -263,3 +263,17 @@ it('preserves the provider error for recovery when one notice write rejects, and
     write.mockRestore();
   }
 });
+
+for (const [diagnostic, expected] of [
+  ['required MCP servers failed to initialize: nanoclaw: timed out handshaking', 'could not start its tools'],
+  ['workspace routing discovery timed out: private-url-and-token', 'connection to the model failed'],
+  ['socket hang up', 'connection to the model failed'],
+  ['Codex sent no activity for 600000ms', 'stopped responding for ten minutes'],
+]) {
+  it(`explains a known provider failure without disclosing its diagnostic: ${expected}`, () => {
+    const notice = providerFailureNotice(new Error(diagnostic));
+    expect(notice).toContain(expected);
+    expect(notice).toContain('earlier actions may have completed');
+    expect(notice).not.toContain(diagnostic);
+  });
+}

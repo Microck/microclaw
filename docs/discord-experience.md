@@ -5,7 +5,7 @@
 For an authorized message that engages GLaDOS:
 
 - Add 👀 when accepted, including container startup time.
-- Show actual tool names and short command/query previews in the reply thread.
+- Show actual tool names and short command/query previews in the reply thread. Use compact Discord subtext lines rather than large command code blocks. Shell wrappers are removed only for presentation; execution and stored observations retain the command. Escape Markdown and mentions in all previews.
 - Search previews include the query or queries, opened URL, or in-page search pattern. If Codex supplies details only at completion, show them then; do not post an empty search label.
 - Label reported reads of a skill's `SKILL.md` as `loading skill: <name>`, with the command preview. This records a load attempt, not successful execution of the skill's instructions.
 - Keep 👀 through tool execution, interim replies and delivery-format retries.
@@ -88,3 +88,32 @@ Thread titles use 🟡 while running, 🟢 after successful completion and 🔴 
 Discord rate-limits thread renames. Status/title updates coalesce to the latest requested value and retry after Discord's reported delay, independently of answer and notification delivery. Pending titles and blocker states persist across controller restarts. New conversations start yellow at creation to save the rename budget for their generated title and completion. During rapid turns the title may lag behind the actual run state.
 
 A live API probe on 2026-10-17 in a separate temporary thread accepted two name changes and rejected the third with HTTP 429 and `retry_after: 597.267` seconds. The ordinary route headers still reported seven requests remaining, so those headers alone do not describe the rename restriction. This is an observation for this bot and thread, not a guaranteed Discord quota. The updater follows Discord's returned retry delay and retains the latest desired name and state.
+
+
+## Per-thread model selection
+
+`/model` shows the current model, reasoning effort and the signed-in account's available models. `/model sol` chooses the latest account-advertised Sol model with low reasoning; `/model sol medium` requests medium reasoning. Full model IDs and the Luna and Astra family names work too. Selection belongs only to the current conversation and persists across worker restarts. A change requested during a turn waits until that turn finishes. It preserves the existing conversation history and never changes another thread or the agent's default.
+
+The opening user message can also select a model, for example “I want you to do X with sol” or “Use sol medium to review this”. Selection happens before the first provider thread/turn starts. Quoted text, code, links, negative instructions and incidental model mentions do not select a model. Availability and supported reasoning levels come from Codex `model/list`; an unavailable model or effort produces a clear error and leaves the prior selection intact. Existing threads without an explicit model selection keep their configured default.
+
+## Provider recovery
+
+Codex retry notifications with `willRetry: true` keep the current turn alive. NanoClaw waits for Codex to recover rather than failing or replaying the request. Terminal errors and the ten-minute inactivity watchdog still fail visibly; completed tool actions are never replayed automatically.
+
+Model discovery includes account-advertised hidden models. `/model gpt-reserve` explicitly selects reserve for this thread, with low reasoning by default; “Use gpt-reserve” also works in the opening message. Reserve is not an automatic fallback. The account catalog and backend still control actual availability.
+
+Each runner pins its built-in MCP environment on its app-server process. Concurrent threads cannot inherit each other's mailbox or context paths through their agent's shared config file.
+
+Known tool-startup, model-connection and inactivity failures receive a specific, sanitized diagnosis in Discord. Notices warn that earlier actions may have completed and leave resumption to the user. Raw diagnostics remain private.
+
+A transient routing or MCP handshake failure retries app-server startup once, before sending any turn. Authentication and other terminal startup errors fail immediately. Stop kills an app-server still starting; it does not wait for its handshake deadline.
+
+Discord gateway shutdown closes an in-progress WebSocket handshake before removing its error handler. A late socket reset during cancellation must not crash the controller. The pinned `@discordjs/ws` patch is enforced by a real socket subprocess test.
+
+The provider reports its actual RPC-process start as activity before the cold handshake. This keeps the host claim grace from expiring while the allowed startup is still in progress.
+
+## Native subagents
+
+The Codex runner enables native subagents with at most two concurrent children per conversation. A direct user request or applicable skill can delegate independent work. Child prompts and reasoning stay private; reported spawn, wait and completion activity appears as compact tool lines. The tool-free proactive reviewer disables delegation independently.
+
+The compact tool presentation follows [Kimaki's formatter](https://github.com/remorses/kimaki/blob/main/kimaki/src/format-parts.ts). NanoClaw keeps read/search and skill-load activity visible.

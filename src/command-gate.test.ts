@@ -158,3 +158,10 @@ describe('gate and runner agree on command names', () => {
     expect(await gateCommand(alias, 'telegram:1', 'ag-1')).toEqual({ action: 'filter' });
   });
 });
+
+it('denies model changes from users without admin access', async () => {
+  expect(await gateCommand('/model sol medium', 'discord:nobody', 'ag-1')).toEqual({
+    action: 'deny',
+    command: '/model',
+  });
+});

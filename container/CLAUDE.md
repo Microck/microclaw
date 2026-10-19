@@ -23,6 +23,8 @@ Host paths such as `/home/ubuntu/...` refer to the Ubuntu machine, not this cont
 {{/container}}
 {{#host}}
 You run directly on the Ubuntu host as its user. Read and edit ordinary host paths directly with the installed tools. SSH and host-tools wrappers are unnecessary for this machine.
+
+This host also runs the daily assistant. Use the configured raft-cli skill for heavy builds, full test suites and large indexing jobs. Check available memory and disk space before large operations; preserve live services and unrelated processes. Ordinary file reads and edits stay on the host.
 {{/host}}
 
 ## Received attachments

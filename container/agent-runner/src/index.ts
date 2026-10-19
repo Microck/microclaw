@@ -1,4 +1,4 @@
-import { AGENT_DIR, SESSION_DIR } from './runtime-paths.js';
+import { AGENT_DIR, SESSION_CONTEXT_PATH, SESSION_DIR } from './runtime-paths.js';
 /**
  * NanoClaw Agent Runner v2
  *
@@ -110,7 +110,13 @@ async function main(): Promise<void> {
     nanoclaw: {
       command: 'bun',
       args: ['run', mcpServerPath],
-      env: {},
+      // Codex filters the parent environment when it starts MCP servers.
+      // Pass the resolved paths so this server uses the current session mailbox.
+      env: {
+        NANOCLAW_AGENT_DIR: AGENT_DIR,
+        NANOCLAW_SESSION_DIR: SESSION_DIR,
+        NANOCLAW_CONTEXT_PATH: SESSION_CONTEXT_PATH,
+      },
     },
   };
 

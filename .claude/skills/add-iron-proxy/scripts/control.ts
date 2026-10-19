@@ -66,6 +66,8 @@ export function controlCompose(root: string, port: number): string {
       web: {
         image: pins['iron-control-image'],
         platform: pins['iron-control-platform'],
+        // Credential infrastructure should outlive ordinary agent workloads under memory pressure.
+        oom_score_adj: -500,
         restart: 'unless-stopped',
         labels,
         env_file: [p.environment],

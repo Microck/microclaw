@@ -55,6 +55,19 @@ class PublicationTest(unittest.TestCase):
         verdict = subprocess.run(('git', 'merge-base', '--is-ancestor', current, candidate), cwd=self.public)
         self.assertEqual(verdict.returncode, 1)
 
+    def test_delta_refreshes_a_stale_git_index_after_jujutsu_moves(self):
+        (self.public / 'upstream.txt').write_text('public update\n')
+        publisher.jj(self.public, 'describe', '-m', 'public update')
+        publisher.jj(self.public, 'new')
+        publisher.run(self.public, 'git', 'read-tree', self.before)
+        (self.source / 'upstream.txt').write_text('original\nlocal suffix\n')
+        current = self.commit('local change after stale index')
+        self.import_source()
+        # A real conflict is expected, rather than the unrelated stale-index error.
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            publisher.apply_source_delta(self.source, self.public, self.before, current)
+        self.assertNotIn(b'does not match index', caught.exception.stderr)
+
     def test_conflicting_delta_stops_instead_of_overwriting_upstream(self):
         (self.public / 'code.txt').write_text('upstream change\n')
         publisher.jj(self.public, 'describe', '-m', 'upstream change')

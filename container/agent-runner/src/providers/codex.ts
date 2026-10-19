@@ -1,4 +1,5 @@
-import { codexToolProgress } from './tool-progress.js';
+import { resolveModelSelection } from '../model-selection.js';
+import { codexToolProgress, codexToolObservation } from './tool-progress.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -8,6 +9,7 @@ import path from 'path';
 import { registerProvider } from './provider-registry.js';
 import type {
   AgentProvider,
+  ModelSelection,
   AgentQuery,
   McpServerConfig,
   ProviderEvent,
@@ -27,6 +29,7 @@ import {
   codexRuntimeOwnership,
   codexTone,
   initializeCodexAppServer,
+  listCodexModels,
   interruptCodexTurn,
   killCodexAppServer,
   spawnCodexAppServer,
@@ -36,10 +39,10 @@ import {
   writeCodexConfigToml,
 } from './codex-app-server.js';
 
-const TURN_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+const QUIET_NOTICE_AFTER_MS = 10 * 60 * 1000;
 
 export interface CodexRuntimeDeps {
-  turnIdleTimeoutMs: number;
+  quietNoticeAfterMs: number;
   writeCodexConfigToml: typeof writeCodexConfigToml;
   spawnCodexAppServer: typeof spawnCodexAppServer;
   attachCodexAutoApproval: typeof attachCodexAutoApproval;
@@ -71,7 +74,7 @@ export interface CodexResolvedConfiguration {
  * reads through this object.
  */
 export const defaultCodexRuntimeDeps: CodexRuntimeDeps = {
-  turnIdleTimeoutMs: TURN_IDLE_TIMEOUT_MS,
+  quietNoticeAfterMs: QUIET_NOTICE_AFTER_MS,
   writeCodexConfigToml,
   spawnCodexAppServer,
   attachCodexAutoApproval,
@@ -109,6 +112,7 @@ export class CodexProvider implements AgentProvider {
 
   private readonly mcpServers: Record<string, McpServerConfig>;
   private readonly inference: CodexConfigPlan['inference'];
+  private selection?: Pick<ModelSelection, 'model' | 'effort'>;
   private readonly tone: ReturnType<typeof codexTone.toSettings>;
   private readonly runtime: CodexRuntimeDeps;
   private memorySessionHook?: CodexMemorySessionHook;
@@ -147,6 +151,38 @@ export class CodexProvider implements AgentProvider {
     return STALE_THREAD_RE.test(msg);
   }
 
+  async configureModel(request?: string): Promise<ModelSelection> {
+    const server = this.runtime.spawnCodexAppServer();
+    try {
+      await this.runtime.initializeCodexAppServer(server);
+      const models = await listCodexModels(server);
+      const inference = this.selection ?? this.inference;
+      const current = inference.model
+        ? models.find((entry) => entry.model === inference.model)
+        : models.find((entry) => entry.isDefault);
+      if (!request && !current)
+        throw new Error(
+          'The configured model is not in the available model catalog. Choose a model with /model <name>.',
+        );
+      const selected = request
+        ? resolveModelSelection(request, models)
+        : {
+            model: current!.model,
+            effort: inference.effort ?? current!.defaultReasoningEffort,
+          };
+      if (request) this.selection = selected;
+      return {
+        ...selected,
+        available: models.map((entry) => ({
+          model: entry.model,
+          efforts: entry.supportedReasoningEfforts.map((effort) => effort.reasoningEffort),
+        })),
+      };
+    } finally {
+      this.runtime.killCodexAppServer(server);
+    }
+  }
+
   query(input: QueryInput): AgentQuery {
     if (!this.memorySessionHook) throw new Error('Codex memory session hook was not registered');
     const memorySessionHook = this.memorySessionHook;
@@ -181,29 +217,56 @@ export class CodexProvider implements AgentProvider {
     const self = this;
 
     async function* gen(): AsyncGenerator<ProviderEvent> {
+      const inference = self.selection ?? self.inference;
       // On a contract core the contract's beforeQuery has already written
       // config.toml and hooks.json for this query (see codexRuntimeOwnership);
       // this direct write is the pre-contract core's path only.
       if (!codexRuntimeOwnership.contractOwnsRuntimeFiles) {
         self.runtime.writeCodexConfigToml(self.mcpServers, memorySessionHook, self.inference);
       }
-      const server = self.runtime.spawnCodexAppServer();
-      activeServer = server;
-      self.runtime.attachCodexAutoApproval(server);
-
+      let server: AppServer | undefined;
       let threadId: string | undefined = input.continuation;
       let initYielded = false;
 
       try {
-        await self.runtime.initializeCodexAppServer(server);
-        threadId = await self.runtime.startOrResumeCodexThread(server, threadId, {
-          model: self.inference.model,
-          forkFrom: input.forkContinuation,
-          ...self.tone,
-          cwd: input.cwd,
-          baseInstructions: input.systemContext?.instructions,
-        });
-        activeThreadId = threadId;
+        // Retry startup once, before any turn or tool can run. Never replay a
+        // failed turn: it may already have changed files or external services.
+        for (let attempt = 0; attempt < 2; attempt++) {
+          if (aborted) return;
+          server = self.runtime.spawnCodexAppServer();
+          activeServer = server;
+          self.runtime.attachCodexAutoApproval(server);
+          try {
+            // Starting the RPC process is real activity. Publish it before the
+            // cold handshake, whose deadline exceeds the host's claim grace.
+            yield { type: 'activity' };
+            if (aborted) return;
+            await self.runtime.initializeCodexAppServer(server);
+            threadId = await self.runtime.startOrResumeCodexThread(server, threadId, {
+              model: inference.model,
+              forkFrom: input.forkContinuation,
+              ...self.tone,
+              cwd: input.cwd,
+              baseInstructions: input.systemContext?.instructions,
+            });
+            break;
+          } catch (error) {
+            self.runtime.killCodexAppServer(server);
+            activeServer = null;
+            if (aborted) return;
+            const message = error instanceof Error ? error.message : '';
+            if (
+              attempt > 0 ||
+              !/routing discovery.*timed out|timed out.*routing discovery|timed out handshaking|ECONNRESET|socket hang up/i.test(
+                message,
+              )
+            )
+              throw error;
+            yield { type: 'progress', message: 'Retrying model startup before sending your request.' };
+          }
+        }
+        if (aborted) return;
+        activeThreadId = threadId!;
 
         while (!aborted) {
           while (pending.length === 0 && !ended && !aborted) {
@@ -216,11 +279,11 @@ export class CodexProvider implements AgentProvider {
 
           const text = pending.shift()!;
           yield* runOneTurn(
-            server,
-            threadId,
+            server!,
+            threadId!,
             text,
-            self.inference.model,
-            self.inference.effort,
+            inference.model,
+            inference.effort,
             input.cwd,
             (turnId) => {
               activeTurnId = turnId;
@@ -244,7 +307,7 @@ export class CodexProvider implements AgentProvider {
         activeThreadId = null;
         activeServer = null;
         wakeActiveTurn = null;
-        self.runtime.killCodexAppServer(server);
+        if (server) self.runtime.killCodexAppServer(server);
       }
     }
 
@@ -258,6 +321,10 @@ export class CodexProvider implements AgentProvider {
         aborted = true;
         if (activeServer && activeThreadId && activeTurnId) {
           void this.runtime.interruptCodexTurn(activeServer, activeThreadId, activeTurnId).catch(() => {});
+        } else if (activeServer) {
+          // Startup has no interruptible turn yet. Kill its RPC process so stop
+          // does not wait for model discovery or the MCP handshake deadline.
+          this.runtime.killCodexAppServer(activeServer);
         }
         wakeActiveTurn?.();
         wake();
@@ -309,6 +376,11 @@ async function* runOneTurn(
   const handler = (n: JsonRpcNotification): void => {
     const method = n.method;
     const params = n.params ?? {};
+    // App-server multiplexes parent and subagent threads on this connection.
+    // A child's completion must never finish the parent's active turn.
+    const notificationThread =
+      typeof params.threadId === 'string' ? params.threadId : (params.thread as { id?: string } | undefined)?.id;
+    if (notificationThread && notificationThread !== threadId) return;
     // Activity proves the provider is alive; elapsed task time is not a failure.
     if (!turnDone) timer.refresh();
     buffer.push({ type: 'activity' });
@@ -339,8 +411,10 @@ async function* runOneTurn(
       case 'item/completed': {
         const item = params.item as { id?: string; type?: string; text?: string } | undefined;
         if (method === 'item/completed') {
+          const observation = codexToolObservation(item);
+          if (observation) buffer.push(observation);
           if (item?.type === 'agentMessage' && item.text) resultText = item.text;
-          if (item?.type !== 'webSearch') break;
+          if (item?.type !== 'webSearch' && item?.type !== 'collabAgentToolCall') break;
         }
         const progress = codexToolProgress(item);
         if (!progress) break;
@@ -363,6 +437,12 @@ async function* runOneTurn(
         break;
       }
       case 'error': {
+        // Codex owns transport recovery. Ending here would abort its retry and
+        // can strand a turn after tools have already changed external state.
+        if (params.willRetry === true) {
+          buffer.push({ type: 'progress', message: 'Codex is reconnecting.' });
+          break;
+        }
         const err = params.error as { message?: string; additionalDetails?: string | null } | undefined;
         const msg = [err?.message, err?.additionalDetails].filter(Boolean).join(': ') || 'Codex turn failed';
         state.error = new Error(msg);
@@ -405,10 +485,20 @@ async function* runOneTurn(
   server.exitHandlers.push(onServerExit);
 
   const timer = setTimeout(() => {
-    state.error = new Error(`Codex sent no activity for ${runtime.turnIdleTimeoutMs}ms`);
-    finishTurn();
+    if (turnDone || isAborted()) return;
+    buffer.push({ type: 'progress', message: 'Codex is quiet; continuing to wait. Send stop to cancel.' });
     kick();
-  }, runtime.turnIdleTimeoutMs);
+  }, runtime.quietNoticeAfterMs);
+  // The worker and app-server may be alive while a tool or native sleep is
+  // quiet. Keep the host heartbeat honest without inventing model progress.
+  const liveness = setInterval(
+    () => {
+      if (turnDone || isAborted()) return;
+      buffer.push({ type: 'activity' });
+      kick();
+    },
+    Math.min(30_000, runtime.quietNoticeAfterMs),
+  );
 
   try {
     if (!hasInit()) {
@@ -461,6 +551,7 @@ async function* runOneTurn(
     yield { type: 'result', text: resultText || null };
   } finally {
     clearTimeout(timer);
+    clearInterval(liveness);
     clearActiveTurn();
     setAbortWaker(null);
     const idx = server.notificationHandlers.indexOf(handler);

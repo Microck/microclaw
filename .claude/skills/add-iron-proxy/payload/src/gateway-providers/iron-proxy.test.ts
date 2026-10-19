@@ -73,17 +73,20 @@ const input: GatewaySessionInput = {
 };
 
 describe('Iron Proxy provider', () => {
-  it('creates only synthetic Codex login data for either auth mode', () => {
+  it('keeps Codex credentials synthetic while preserving workspace identity', () => {
     const api = JSON.parse(codexPlaceholder('api'));
     expect(api.OPENAI_API_KEY).toBe('nc-codex-token-v1');
-    const chatgpt = JSON.parse(codexPlaceholder('chatgpt'));
+    const chatgpt = JSON.parse(codexPlaceholder('chatgpt', 'workspace-fixture'));
     expect(chatgpt.tokens.access_token).toBe('nc-codex-token-v1');
     expect(chatgpt.tokens.refresh_token).toBe('');
-    expect(chatgpt.tokens.account_id).toBe('nc-codex-token-v1');
+    expect(chatgpt.tokens.account_id).toBe('workspace-fixture');
+    const claims = JSON.parse(Buffer.from(chatgpt.tokens.id_token.split('.')[1], 'base64url').toString());
+    expect(claims['https://api.openai.com/auth'].chatgpt_account_id).toBe('workspace-fixture');
+    expect(() => codexPlaceholder('chatgpt')).toThrow('workspace ID is missing');
     expect(chatgpt.tokens.id_token.split('.')).toHaveLength(3);
   });
 
-  it('mounts only a read-only synthetic Codex file scoped to the agent group', () => {
+  it('mounts a read-only Codex token stub scoped to the agent group', () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'iron-codex-mount-'));
     const configured = { ...readIronProxySettings({}, projectRoot), managed: true };
     try {
@@ -91,7 +94,10 @@ describe('Iron Proxy provider', () => {
       fs.writeFileSync(configured.identityKey, Buffer.alloc(32, 7));
       const metadata = path.join(projectRoot, 'data/session-materials/iron-control/codex.json');
       fs.mkdirSync(path.dirname(metadata), { recursive: true });
-      fs.writeFileSync(metadata, JSON.stringify({ mode: 'chatgpt', secretIds: ['private-id'] }));
+      fs.writeFileSync(
+        metadata,
+        JSON.stringify({ mode: 'chatgpt', accountId: 'workspace-fixture', secretIds: ['private-id'] }),
+      );
       const contribution = ironProxyContribution(configured, input);
       const auth = contribution.mounts!.find((mount) => mount.containerPath.endsWith('/auth.json'))!;
       expect(auth).toMatchObject({ class: 'group-state', mode: 'ro', groupScope: 'group' });

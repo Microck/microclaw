@@ -43,6 +43,11 @@ def apply_source_delta(source, checkout, previous, current):
     patch = run(source, 'git', 'diff', '--binary', previous, current, '--',
                 '.', f':(exclude){EXCLUDED}')
     if patch:
+        # Jujutsu owns the worktree; Git's cached index can still describe an
+        # earlier candidate. Seed and refresh it before Git's three-way apply.
+        revision = jj(checkout, 'log', '-r', '@', '--no-graph', '-T', 'commit_id')
+        run(checkout, 'git', 'read-tree', revision)
+        run(checkout, 'git', 'update-index', '--refresh')
         run(checkout, 'git', 'apply', '--3way', input=patch)
     jj(checkout, 'status')
 

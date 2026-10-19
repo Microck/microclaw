@@ -20,6 +20,7 @@ const FILTERED_COMMANDS = new Set(
 const ADMIN_COMMANDS = new Set([
   '/clear',
   '/upload-trace',
+  '/model',
   ...listProviderHostContracts().flatMap((contract) => contract.commands?.nativeAdmin ?? []),
 ]);
 

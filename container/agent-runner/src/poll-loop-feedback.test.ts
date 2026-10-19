@@ -205,8 +205,12 @@ it('starts post-reply work before a reusable query stream closes', async () => {
 
 it('publishes pending first-title metadata with completion without waiting for the title process', async () => {
   const query: AgentQuery = {
-    push() {}, abort() {}, end() {},
-    events: (async function* (): AsyncGenerator<ProviderEvent> { yield { type: 'result', text: null }; })(),
+    push() {},
+    abort() {},
+    end() {},
+    events: (async function* (): AsyncGenerator<ProviderEvent> {
+      yield { type: 'result', text: null };
+    })(),
   };
   let started = false;
   await processQuery(query, routing, [], 'codex', undefined, 'prompt', undefined, false, undefined, () => {
@@ -214,5 +218,20 @@ it('publishes pending first-title metadata with completion without waiting for t
     return 'Thread today';
   });
   expect(started).toBe(true);
-  expect(progress()).toEqual([{ phase: 'completed', targets: routing.feedbackTargets, initialThreadName: 'Thread today' }]);
+  expect(progress()).toEqual([
+    { phase: 'completed', targets: routing.feedbackTargets, initialThreadName: 'Thread today' },
+  ]);
+});
+
+it('keeps tool observations internal and allows a quiet completed background verification', async () => {
+  await run(
+    (async function* (): AsyncGenerator<ProviderEvent> {
+      yield { type: 'observation', name: 'terminal', result: 'build exited 0' };
+      yield { type: 'result', text: '<internal>NO_REPLY</internal>' };
+    })(),
+  );
+  const rows = getUndeliveredMessages();
+  expect(rows.filter((row) => row.kind === 'agent_observation')).toHaveLength(1);
+  expect(rows.filter((row) => row.kind === 'chat')).toHaveLength(0);
+  expect(progress().at(-1)?.phase).toBe('completed');
 });

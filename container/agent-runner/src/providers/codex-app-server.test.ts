@@ -7,6 +7,7 @@ import {
   type AppServer,
   CODEX_APP_SERVER_ARGS,
   attachCodexAutoApproval,
+  buildCodexAppServerArgs,
   buildCodexConfigPlan,
   buildCodexProcessEnv,
   codexInferenceSection,
@@ -74,6 +75,11 @@ describe('Codex config TOML', () => {
         '',
         '[features]',
         'memories = false',
+        'sleep_tool = true',
+        '',
+        '[agents]',
+        'enabled = true',
+        'max_concurrent_threads_per_session = 2',
         '',
         '[memories]',
         'use_memories = false',
@@ -358,6 +364,28 @@ describe('Codex config TOML', () => {
     expect(fs.readFileSync(configPath, 'utf-8')).toContain('model = "gpt-5"');
     expect(fs.readFileSync(configPath, 'utf-8')).not.toContain('stale config');
     expect(fs.readFileSync(hooksPath, 'utf-8')).toBe('');
+  });
+});
+
+describe('Codex app-server args', () => {
+  it('overrides shared MCP config with this session’s NanoClaw paths', () => {
+    const args = buildCodexAppServerArgs({
+      agentDir: '/workspace/agent',
+      sessionDir: '/session path/with "quotes"',
+      contextPath: '/session path/.nanoclaw-session.json',
+    });
+
+    expect(args).toEqual([
+      CODEX_APP_SERVER_ARGS[0],
+      CODEX_APP_SERVER_ARGS[1],
+      '--config',
+      'mcp_servers.nanoclaw.env.NANOCLAW_AGENT_DIR="/workspace/agent"',
+      '--config',
+      'mcp_servers.nanoclaw.env.NANOCLAW_SESSION_DIR="/session path/with \\"quotes\\""',
+      '--config',
+      'mcp_servers.nanoclaw.env.NANOCLAW_CONTEXT_PATH="/session path/.nanoclaw-session.json"',
+      ...CODEX_APP_SERVER_ARGS.slice(2),
+    ]);
   });
 });
 

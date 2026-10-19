@@ -65,8 +65,9 @@ describe('implicit gateway migration', () => {
 
 describe('real detector probe', () => {
   it('detects an installed gateway from inside a nested pnpm', () => {
-    // An outer `pnpm exec` sets this. The inner pnpm then prints a WARN to stdout
-    // for a nested package.json with a `pnpm` field, ahead of the detector's answer.
+    // Keep the real nested-pnpm probe, checking its detector result.
+    // pnpm versions differ on whether they warn for nested package.json fields.
+    // The contract is successful detection, not an incidental package-manager warning.
     vi.stubEnv('pnpm_config_verify_deps_before_run', 'false');
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gateway-probe-'));
     roots.push(root);
@@ -110,7 +111,7 @@ describe('real detector probe', () => {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    expect(loud).toContain('WARN');
+    expect(loud.trim().split('\n').at(-1)).toBe('installed');
     expect(detectInstalledGateway(root)).toBe('fixture');
   });
 });

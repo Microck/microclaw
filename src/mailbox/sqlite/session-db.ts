@@ -9,7 +9,7 @@ import Database from 'better-sqlite3';
 
 import { createInboundRecord } from '../model.js';
 import type { InboundWrite } from '../model.js';
-import { INBOUND_SCHEMA, OUTBOUND_SCHEMA } from './schema.js';
+import { INBOUND_SCHEMA, OUTBOUND_SCHEMA, INBOUND_ACTIVITY_INDEXES } from './schema.js';
 
 /** Apply the inbound or outbound schema to a DB file. Idempotent. */
 export function ensureSchema(dbPath: string, schema: 'inbound' | 'outbound'): void {
@@ -309,6 +309,7 @@ export function migrateMessagesInTable(db: Database.Database): void {
     // All existing rows are normal messages, so default 0.
     db.prepare('ALTER TABLE messages_in ADD COLUMN on_wake INTEGER NOT NULL DEFAULT 0').run();
   }
+  db.exec(INBOUND_ACTIVITY_INDEXES);
 }
 
 /**

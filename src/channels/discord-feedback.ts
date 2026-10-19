@@ -15,13 +15,16 @@ export function createDiscordFeedback(
     if (progress.phase === 'tool') {
       const tool = progress.tool!;
       const icon = tool.name === 'terminal' ? '🖥️' : '🔧';
-      // Fences suppress command URL unfurls and prevent mentions in previews.
-      const label = `${icon} ${tool.name.replace(/[`@\n]/g, '')}`;
-      const text = tool.preview ? `${label}\n\`\`\`\n${tool.preview.replace(/`/g, "'")}\n\`\`\`` : label;
+      // Compact subtext keeps tool history visible. Escaping prevents command
+      // punctuation from becoming formatting; inline code suppresses URL unfurls.
+      const inline = (value: string) => value.replace(/[@\r\n]/g, ' ').replace(/([\\_*`~|<>])/g, '\\$1');
+      const label = `${icon} ${inline(tool.name)}`;
+      const command = tool.preview.replace(/[`\r\n]/g, "'").replace(/@/g, '@\u200b');
+      const text = `-# ${label}${command ? ` · \`${command}\`` : ''}`;
       const previous = previews.get(key);
       if (previous?.text === text) {
         const nextCount = previous.count + 1;
-        await adapter.editMessage(replyThread, previous.id, { markdown: `${text}\n(×${nextCount})` });
+        await adapter.editMessage(replyThread, previous.id, { markdown: `${text} (×${nextCount})` });
         previous.count = nextCount;
         return previous.id;
       }

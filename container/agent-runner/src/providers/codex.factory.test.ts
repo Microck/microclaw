@@ -12,7 +12,7 @@ const MEMORY_HOOK = { command: 'bun /app/src/memory/hook.ts', legacyCommands: []
 function recordingRuntime(): { runtime: CodexRuntimeDeps; writes: Parameters<typeof writeCodexConfigToml>[] } {
   const writes: Parameters<typeof writeCodexConfigToml>[] = [];
   const runtime: CodexRuntimeDeps = {
-    turnIdleTimeoutMs: 600_000,
+    quietNoticeAfterMs: 600_000,
     writeCodexConfigToml: (...args) => {
       writes.push(args);
     },
@@ -41,6 +41,7 @@ function recordingRuntime(): { runtime: CodexRuntimeDeps; writes: Parameters<typ
 async function runQueryToHandshake(provider: CodexProvider): Promise<void> {
   provider.registerMemorySessionHook(MEMORY_HOOK);
   const query = provider.query({ prompt: 'hello', cwd: '/workspace/agent' });
+  expect(await query.events.next()).toEqual({ done: false, value: { type: 'activity' } });
   await expect(query.events.next()).rejects.toThrow('handshake stopped by test');
 }
 
@@ -127,6 +128,7 @@ describe('CodexProvider', () => {
     });
     provider.registerMemorySessionHook(MEMORY_HOOK);
     const query = provider.query({ prompt: 'hi', cwd: '/workspace/agent' });
+    expect(await query.events.next()).toEqual({ done: false, value: { type: 'activity' } });
     await expect(query.events.next()).rejects.toThrow('thread settings captured');
   });
 });

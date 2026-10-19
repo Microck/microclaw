@@ -116,6 +116,7 @@ describe('Iron Proxy setup on an arm64 Linux engine', () => {
     const web = yaml(fs.readFileSync(controlPaths(root).compose, 'utf8')).services.web;
     expect(web.image).toMatch(/^docker.io\/ironsh\/iron-control:.*@sha256:[a-f0-9]{64}$/);
     expect(web.platform).toBe('linux/amd64');
+    expect(web.oom_score_adj).toBe(-500);
   });
 });
 

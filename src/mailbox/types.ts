@@ -150,7 +150,36 @@ export interface OutboundMailbox {
   getTopLevelOutbound(limit: number): MailboxTimelineMessage[];
 }
 
-export interface MailboxSession extends InboundMailbox, OutboundMailbox {}
+/** Bounded, cursor-based activity for background review, not a second transcript. */
+export interface ActivityEntry {
+  id: string;
+  sequence: number;
+  timestamp: string;
+  kind: string;
+  content: string;
+}
+export interface ActivityInput extends ActivityEntry {
+  platformId: string | null;
+  channelType: string | null;
+  threadId: string | null;
+}
+export interface ActivityCursor {
+  inbound: number;
+  outbound: number;
+}
+export interface ActivitySnapshot {
+  head: ActivityCursor;
+  inbound: ActivityEntry[];
+  outbound: ActivityEntry[];
+  origin?: ActivityInput;
+  stopped: boolean;
+  busy: boolean;
+  outcomes: ProcessingAck[];
+}
+export interface MailboxSession extends InboundMailbox, OutboundMailbox {
+  getActivitySnapshot(cursor?: ActivityCursor): ActivitySnapshot;
+  hasInboundMessage(id: string): boolean;
+}
 
 export interface AgentMailbox {
   /** True only when this implementation already owns storage for the key. Must not provision it. */

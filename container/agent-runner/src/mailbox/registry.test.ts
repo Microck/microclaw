@@ -53,7 +53,7 @@ describe('agent mailbox registry', () => {
     expect(await read('../index.ts')).toContain("import './modules/index.js';");
     expect(await read('../mcp-tools/index.ts')).toContain("import '../modules/index.js';");
     expect(await read('../cli/ncl.ts')).toContain("import '../modules/index.js';");
-    expect(await read('../../bunfig.toml')).toContain('preload = ["./src/modules/index.ts"]');
+    expect(Bun.TOML.parse(await read('../../bunfig.toml')).test.preload).toContain('./src/modules/index.ts');
   });
 
   test('keeps SQLite connections and SQL inside the SQLite driver', async () => {

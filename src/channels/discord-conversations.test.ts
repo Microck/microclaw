@@ -190,3 +190,12 @@ it('keeps valid resume choices when another thread has been deleted', async () =
   expect(JSON.stringify(picker.components)).toContain(session.id);
   expect(JSON.stringify(picker.components)).not.toContain(missing.id);
 });
+
+it('queues model controls durably in the current thread and wakes only its session', async () => {
+  const request = interaction('model', { model: 'sol medium' });
+  const reply = await controller.command(request, OWNER);
+  expect(reply.content).toContain('running turn finishes first');
+  const inputs = await withExistingMailboxSession(groupId, session.id, (mailbox) => mailbox.getQueuedInputs());
+  expect(inputs).toEqual([{ id: request.id, text: '/model sol medium' }]);
+  expect(wakes).toEqual([session.id]);
+});

@@ -36,6 +36,19 @@ const messageOption = {
 };
 export const DISCORD_CONVERSATION_COMMANDS = [
   {
+    name: 'model',
+    description: 'Show or change the model for this conversation',
+    type: 1,
+    options: [
+      {
+        type: 3,
+        name: 'model',
+        description: 'Model name or family, optionally with reasoning: sol medium',
+        max_length: 120,
+      },
+    ],
+  },
+  {
     name: 'queue',
     description: 'Queue a follow-up, or inspect/edit pending messages',
     type: 1,
@@ -147,6 +160,25 @@ export class DiscordConversations {
     const context = await this.current(interaction);
     const { session, group, platformId, threadId } = context;
     const options = Object.fromEntries((interaction.data?.options ?? []).map((option) => [option.name, option.value]));
+    if (name === 'model') {
+      const specification = String(options.model ?? '').trim();
+      await writeSessionMessage(group.id, session.id, {
+        id: interaction.id,
+        kind: 'chat',
+        timestamp: new Date().toISOString(),
+        platformId,
+        channelType: 'discord',
+        threadId,
+        content: JSON.stringify({
+          text: `/model${specification ? ' ' + specification : ''}`,
+          sender: 'Owner',
+          senderId: `discord:${userId}`,
+          delivery: 'queue',
+        }),
+      });
+      await this.wake(session, 'interactive');
+      return { content: 'Model request queued for this conversation. A running turn finishes first.' };
+    }
     if (name === 'btw') {
       const question = String(options.question ?? '').trim();
       if (!question) throw new Error('Provide a side question.');

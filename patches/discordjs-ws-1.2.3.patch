@@ -1,0 +1,92 @@
+diff --git a/dist/defaultWorker.js b/dist/defaultWorker.js
+index 306d691077f81e96bf977ed13aa1a962e13e5d0c..f88b469ccfd6bf59e7bfb2cd61a7cf3f98cd9688 100644
+--- a/dist/defaultWorker.js
++++ b/dist/defaultWorker.js
+@@ -497,7 +497,8 @@ var WebSocketShard = class extends import_async_event_emitter.AsyncEventEmitter
+     if (this.connection) {
+       this.connection.onmessage = null;
+       this.connection.onclose = null;
+-      const shouldClose = this.connection.readyState === import_ws.WebSocket.OPEN;
++      // Keep the error handler until even a pending handshake has closed.
++      const shouldClose = this.connection.readyState === import_ws.WebSocket.OPEN || this.connection.readyState === import_ws.WebSocket.CONNECTING;
+       this.debug([
+         "Connection status during destroy",
+         `Needs closing: ${shouldClose}`,
+@@ -536,6 +537,8 @@ var WebSocketShard = class extends import_async_event_emitter.AsyncEventEmitter
+       ]);
+       return { ok: !closed };
+     } catch {
++      // destroy() clears ownership before its aborted waits settle.
++      if (this.timeoutAbortControllers.get(event) !== timeoutController) return { ok: false };
+       void this.destroy({
+         code: 1e3 /* Normal */,
+         reason: "Something timed out or went wrong while waiting for an event",
+diff --git a/dist/defaultWorker.mjs b/dist/defaultWorker.mjs
+index 1302a02537062b489b0be156eccb60a960f015c5..dd72558368abd487be10894002f4f9f75175bf6a 100644
+--- a/dist/defaultWorker.mjs
++++ b/dist/defaultWorker.mjs
+@@ -479,7 +479,8 @@ var WebSocketShard = class extends AsyncEventEmitter {
+     if (this.connection) {
+       this.connection.onmessage = null;
+       this.connection.onclose = null;
+-      const shouldClose = this.connection.readyState === WebSocket.OPEN;
++      // Keep the error handler until even a pending handshake has closed.
++      const shouldClose = this.connection.readyState === WebSocket.OPEN || this.connection.readyState === WebSocket.CONNECTING;
+       this.debug([
+         "Connection status during destroy",
+         `Needs closing: ${shouldClose}`,
+@@ -518,6 +519,8 @@ var WebSocketShard = class extends AsyncEventEmitter {
+       ]);
+       return { ok: !closed };
+     } catch {
++      // destroy() clears ownership before its aborted waits settle.
++      if (this.timeoutAbortControllers.get(event) !== timeoutController) return { ok: false };
+       void this.destroy({
+         code: 1e3 /* Normal */,
+         reason: "Something timed out or went wrong while waiting for an event",
+diff --git a/dist/index.js b/dist/index.js
+index 106b2ec450a248cd5bd7c36c038215145438eade..4fa990213e2eb569b0c2f62cfc5924424ec423d3 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -736,7 +736,8 @@ var WebSocketShard = class extends import_async_event_emitter.AsyncEventEmitter
+     if (this.connection) {
+       this.connection.onmessage = null;
+       this.connection.onclose = null;
+-      const shouldClose = this.connection.readyState === import_ws.WebSocket.OPEN;
++      // Keep the error handler until even a pending handshake has closed.
++      const shouldClose = this.connection.readyState === import_ws.WebSocket.OPEN || this.connection.readyState === import_ws.WebSocket.CONNECTING;
+       this.debug([
+         "Connection status during destroy",
+         `Needs closing: ${shouldClose}`,
+@@ -775,6 +776,8 @@ var WebSocketShard = class extends import_async_event_emitter.AsyncEventEmitter
+       ]);
+       return { ok: !closed };
+     } catch {
++      // destroy() clears ownership before its aborted waits settle.
++      if (this.timeoutAbortControllers.get(event) !== timeoutController) return { ok: false };
+       void this.destroy({
+         code: 1e3 /* Normal */,
+         reason: "Something timed out or went wrong while waiting for an event",
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 0ebc06d477ac54303c7542261cc5bcc9a9537519..d150bf416e21d30c956c4ecf04fd04f9363d4a9a 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -697,7 +697,8 @@ var WebSocketShard = class extends AsyncEventEmitter {
+     if (this.connection) {
+       this.connection.onmessage = null;
+       this.connection.onclose = null;
+-      const shouldClose = this.connection.readyState === WebSocket.OPEN;
++      // Keep the error handler until even a pending handshake has closed.
++      const shouldClose = this.connection.readyState === WebSocket.OPEN || this.connection.readyState === WebSocket.CONNECTING;
+       this.debug([
+         "Connection status during destroy",
+         `Needs closing: ${shouldClose}`,
+@@ -736,6 +737,8 @@ var WebSocketShard = class extends AsyncEventEmitter {
+       ]);
+       return { ok: !closed };
+     } catch {
++      // destroy() clears ownership before its aborted waits settle.
++      if (this.timeoutAbortControllers.get(event) !== timeoutController) return { ok: false };
+       void this.destroy({
+         code: 1e3 /* Normal */,
+         reason: "Something timed out or went wrong while waiting for an event",

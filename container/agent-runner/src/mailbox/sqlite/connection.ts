@@ -8,7 +8,8 @@ import { SESSION_DIR } from '../../runtime-paths.js';
  *   inbound.db  — host writes new messages here; container opens READ-ONLY
  *   outbound.db — container writes responses + acks here; host opens read-only
  *
- * Each file has exactly one writer, so no cross-process lock contention.
+ * Host and runner own different files. Runner and MCP processes serialize
+ * their outbound writes through SQLite's lock timeout.
  *
  * ⚠ Cross-mount visibility: inbound.db MUST be journal_mode=DELETE (set by
  * the host when the file is created). WAL's `-shm` is memory-mapped and
@@ -73,46 +74,58 @@ export function getInboundDb(): Database {
   return _inbound;
 }
 
-/** Outbound DB — container owns this file (sole writer). */
+/** Outbound DB — runner and MCP processes share this writer-side connection policy. */
 export function getOutboundDb(): Database {
   if (!_outbound) {
-    _outbound = new Database(DEFAULT_OUTBOUND_PATH);
-    _outbound.exec('PRAGMA journal_mode = DELETE');
-    _outbound.exec('PRAGMA busy_timeout = 5000');
-    _outbound.exec('PRAGMA foreign_keys = ON');
-    // Lightweight forward-compat: session_state was added after the initial
-    // v2 schema, so older session DBs don't have it. Create it on demand
-    // instead of requiring a formal migration pass. Also handle the case
-    // where an earlier revision of this table existed without updated_at —
-    // ALTER TABLE to add any missing columns.
-    _outbound.exec(`
-      CREATE TABLE IF NOT EXISTS session_state (
-        key        TEXT PRIMARY KEY,
-        value      TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+    const db = new Database(DEFAULT_OUTBOUND_PATH);
+    try {
+      // journal_mode itself can need a lock while the runner is writing.
+      db.exec('PRAGMA busy_timeout = 5000');
+      db.exec('PRAGMA journal_mode = DELETE');
+      db.exec('PRAGMA foreign_keys = ON');
+      // Lightweight forward-compat: session_state was added after the initial
+      // v2 schema, so older session DBs don't have it. Create it on demand
+      // instead of requiring a formal migration pass. Also handle the case
+      // where an earlier revision of this table existed without updated_at —
+      // ALTER TABLE to add any missing columns.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS session_state (
+          key        TEXT PRIMARY KEY,
+          value      TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      `);
+      const cols = new Set(
+        (db.prepare("PRAGMA table_info('session_state')").all() as Array<{ name: string }>).map((c) => c.name),
       );
-    `);
-    const cols = new Set(
-      (_outbound.prepare("PRAGMA table_info('session_state')").all() as Array<{ name: string }>).map((c) => c.name),
-    );
-    if (!cols.has('updated_at')) {
-      _outbound.exec(
-        `ALTER TABLE session_state ADD COLUMN updated_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'`,
-      );
+      if (!cols.has('updated_at')) {
+        db.exec(`ALTER TABLE session_state ADD COLUMN updated_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'`);
+      }
+      db.exec(`UPDATE session_state SET updated_at = '1970-01-01T00:00:00.000Z' WHERE updated_at = ''`);
+      // container_state: tracks the current tool in flight (if any) so the host
+      // sweep can widen its stuck tolerance when Bash is running with a user-
+      // declared long timeout. Forward-compat for older outbound.db files.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS container_state (
+          id                       INTEGER PRIMARY KEY CHECK (id = 1),
+          current_tool             TEXT,
+          tool_declared_timeout_ms INTEGER,
+          tool_started_at          TEXT,
+          updated_at               TEXT NOT NULL
+        );
+      `);
+      // The runner owns outbound schema writes, including indexes used by host review.
+      db.exec(`CREATE TABLE IF NOT EXISTS processing_ack (
+        message_id TEXT PRIMARY KEY, status TEXT NOT NULL, status_changed TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS idx_processing_active ON processing_ack(status) WHERE status='processing';
+        CREATE INDEX IF NOT EXISTS idx_processing_finished ON processing_ack(status_changed DESC) WHERE status!='processing';`);
+      // Publish only fully initialized connections. A failed open must not
+      // leave a cached handle with the default zero lock timeout.
+      _outbound = db;
+    } catch (error) {
+      db.close();
+      throw error;
     }
-    _outbound.exec(`UPDATE session_state SET updated_at = '1970-01-01T00:00:00.000Z' WHERE updated_at = ''`);
-    // container_state: tracks the current tool in flight (if any) so the host
-    // sweep can widen its stuck tolerance when Bash is running with a user-
-    // declared long timeout. Forward-compat for older outbound.db files.
-    _outbound.exec(`
-      CREATE TABLE IF NOT EXISTS container_state (
-        id                       INTEGER PRIMARY KEY CHECK (id = 1),
-        current_tool             TEXT,
-        tool_declared_timeout_ms INTEGER,
-        tool_started_at          TEXT,
-        updated_at               TEXT NOT NULL
-      );
-    `);
   }
   return _outbound;
 }

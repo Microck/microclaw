@@ -333,7 +333,7 @@ in its own header — and nothing else. The seam names that profile rather than
 describing OAuth in general; a gateway rejects any other profile. OneCLI stores
 it as its native `openai` record, re-encoding OpenCode's parsed login into the
 Codex file shape that record expects. Iron stores it as a token broker plus a
-separate account-header secret. Parsing a provider's own login file stays in
+separate account-header secret. The Codex client also receives the non-secret workspace identifier so it can validate routing discovery. Parsing a provider's own login file stays in
 the provider; converting to a gateway's storage format stays in the gateway.
 
 `modelEndpoint(url)` is the one network hook. A provider calls it when the

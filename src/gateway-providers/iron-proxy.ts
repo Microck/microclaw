@@ -305,18 +305,20 @@ export function signedWorkloadToken(identity: string, key: Buffer): string {
   return `${unsigned}.${createHmac('sha256', key).update(unsigned).digest('base64url')}`;
 }
 
-/** Synthetic login data only; real tokens and account headers stay inside Iron. */
-export function codexPlaceholder(mode: 'api' | 'chatgpt'): string {
+/** Tokens stay in Iron; Codex needs the real workspace identifier for routing discovery. */
+export function codexPlaceholder(mode: 'api' | 'chatgpt', accountId?: string): string {
   if (mode === 'api') return JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: CODEX_PLACEHOLDER });
+  if (typeof accountId !== 'string' || !accountId.trim())
+    throw new Error('Codex ChatGPT workspace ID is missing. Reconnect Codex through the credential setup.');
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
   const token = `${encode({ alg: 'none' })}.${encode({
     sub: CODEX_PLACEHOLDER,
-    'https://api.openai.com/auth': { chatgpt_account_id: CODEX_PLACEHOLDER, chatgpt_plan_type: 'plus' },
+    'https://api.openai.com/auth': { chatgpt_account_id: accountId, chatgpt_plan_type: 'plus' },
   })}.cGxhY2Vob2xkZXI`;
   return JSON.stringify({
     auth_mode: 'chatgpt',
     OPENAI_API_KEY: null,
-    tokens: { id_token: token, access_token: CODEX_PLACEHOLDER, refresh_token: '', account_id: CODEX_PLACEHOLDER },
+    tokens: { id_token: token, access_token: CODEX_PLACEHOLDER, refresh_token: '', account_id: accountId },
     last_refresh: new Date().toISOString(),
   });
 }
@@ -328,14 +330,14 @@ function codexAuthMount(
   if (!settings.managed || !settings.projectRoot) return [];
   const metadata = path.join(settings.projectRoot, 'data/session-materials/iron-control/codex.json');
   if (!fs.existsSync(metadata)) return [];
-  const { mode } = JSON.parse(fs.readFileSync(metadata, 'utf8'));
+  const { mode, accountId } = JSON.parse(fs.readFileSync(metadata, 'utf8'));
   if (mode !== 'api' && mode !== 'chatgpt') throw new Error('Invalid Iron Codex authentication mode');
   const group = input.key.agentGroupId;
   if (!/^[a-zA-Z0-9_-]+$/.test(group)) throw new Error('Invalid agent group ID');
   const directory = path.join(settings.projectRoot, 'data/v2-sessions', group, '.iron-codex');
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const file = path.join(directory, 'auth.json');
-  fs.writeFileSync(file, codexPlaceholder(mode), { mode: 0o644 });
+  fs.writeFileSync(file, codexPlaceholder(mode, accountId), { mode: 0o644 });
   return [
     {
       class: 'group-state',

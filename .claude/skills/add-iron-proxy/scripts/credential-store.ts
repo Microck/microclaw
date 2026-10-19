@@ -70,6 +70,7 @@ export function createCredentialStore(root = process.cwd()): ProviderCredentialS
       check(provider);
       if (!fs.existsSync(metadata)) return false;
       const state = JSON.parse(fs.readFileSync(metadata, 'utf8'));
+      if (state.mode === 'chatgpt' && !state.accountId) return false;
       for (const id of state.secretIds) {
         const secret = await controlRequest(root, `static_secrets/${id}`);
         // Old host-wide injection needs reconnection; values cannot be read back.
@@ -91,6 +92,7 @@ export function createCredentialStore(root = process.cwd()): ProviderCredentialS
     async save(provider, credential) {
       check(provider);
       let mode: 'api' | 'chatgpt', host: string, brokerId: string | undefined;
+      let accountId: string | undefined;
       const secretIds: string[] = [];
       if (credential.kind === 'api-key') {
         mode = 'api';
@@ -112,6 +114,7 @@ export function createCredentialStore(root = process.cwd()): ProviderCredentialS
         const tokens = auth.tokens;
         if (!tokens?.refresh_token || !tokens?.account_id || !tokens?.id_token)
           throw new Error('Codex login did not produce a complete ChatGPT session.');
+        accountId = tokens.account_id;
         const claims = JSON.parse(Buffer.from(tokens.id_token.split('.')[1], 'base64url').toString());
         const clientId = typeof claims.aud === 'string' ? claims.aud : claims.aud?.[0];
         if (!clientId) throw new Error('Codex login did not identify its OAuth client.');
@@ -146,8 +149,8 @@ export function createCredentialStore(root = process.cwd()): ProviderCredentialS
       fs.writeFileSync(paths.allowedHosts, JSON.stringify([...new Set([...allowed, host])]), { mode: 0o600 });
       await run([], root);
       // Mark setup complete only after the proxy has accepted its new configuration.
-      // Record only non-secret IDs and mode. Iron owns all token refreshes.
-      fs.writeFileSync(metadata, JSON.stringify({ mode, brokerId, secretIds }) + '\n', { mode: 0o600 });
+      // The workspace identifier is required by Codex routing; tokens stay in Iron.
+      fs.writeFileSync(metadata, JSON.stringify({ mode, accountId, brokerId, secretIds }) + '\n', { mode: 0o600 });
     },
   };
 }

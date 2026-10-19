@@ -193,7 +193,7 @@ describe('Discord personal agent management', () => {
     const createSchema = DISCORD_AGENT_COMMAND.options[0] as { options: Array<{ name: string; required?: boolean }> };
     expect(createSchema.options.find((option) => option.name === 'personality')?.required).not.toBe(true);
     await manager.handle(command('edit', { name: 'Researcher', personality: 'Be a curious research assistant.' }));
-    expect(discord.registrations).toBe(8);
+    expect(discord.registrations).toBe(9);
     expect(discord.channels).toHaveLength(2);
     const [agent] = records();
     expect(agent.status).toBe('active');
@@ -424,5 +424,5 @@ it('bounds traversal even when entries have no content or are not Markdown', asy
 it('honors Discord command-registration cooldowns without abandoning later commands', async () => {
   discord.rateLimitCommand = true;
   await manager.register();
-  expect(discord.registrations).toBe(9);
+  expect(discord.registrations).toBe(10);
 });

@@ -141,6 +141,7 @@ function readCodexFiles(home: string): { configToml: string; hooksJson: string }
       });
 
       const query = provider.query({ prompt: 'hello', cwd: '/workspace/agent' });
+      expect(await query.events.next()).toEqual({ done: false, value: { type: 'activity' } });
       await expect(query.events.next()).rejects.toThrow('handshake stopped by test');
 
       const written = writeSpy.mock.calls.map((call) => path.basename(String(call[0])));

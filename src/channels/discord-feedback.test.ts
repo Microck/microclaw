@@ -35,6 +35,18 @@ function transport(failFirstEdit = false) {
 const targets = [{ platformId: 'discord:123:456', messageId: '123456789012345678' }];
 
 describe('Discord processing feedback', () => {
+  it('keeps URL previews inside inline code without allowing mentions or fence escapes', async () => {
+    const { feedback, calls } = transport();
+    await feedback('discord:123:456', {
+      phase: 'tool',
+      targets,
+      tool: { name: 'terminal', preview: 'curl https://example.test/`name` @everyone' },
+    });
+    expect(calls.at(-1)?.body).toEqual({
+      markdown: "-# 🖥️ terminal · `curl https://example.test/'name' @\u200beveryone`",
+    });
+  });
+
   it('does not notify for tool activity, receipt, cancellation, or unattended runs', async () => {
     const { feedback, calls } = transport();
     await feedback('discord:123:456', { phase: 'received', targets });
@@ -55,7 +67,7 @@ describe('Discord processing feedback', () => {
     await feedback('discord:123:456:789', { phase: 'completed', targets });
     expect(calls.map((call) => [call.operation, call.thread, call.body])).toEqual([
       ['add', 'discord:123:456', '👀'],
-      ['post', 'discord:123:456:789', { markdown: '🖥️ terminal\n```\nprintf hello\n```' }],
+      ['post', 'discord:123:456:789', { markdown: '-# 🖥️ terminal · `printf hello`' }],
       ['remove', 'discord:123:456', '👀'],
       ['add', 'discord:123:456', '✅'],
     ]);
@@ -78,7 +90,7 @@ describe('Discord processing feedback', () => {
     await feedback('discord:123:456', progress);
     await feedback('discord:123:456', progress);
     expect(calls[1].operation).toBe('edit');
-    expect(calls[1].body).toEqual({ markdown: '🔧 kagi.search\n```\nquery\n```\n(×2)' });
+    expect(calls[1].body).toEqual({ markdown: '-# 🔧 kagi.search · `query` (×2)' });
     await expect(
       feedback('discord:123:456', {
         phase: 'received',
@@ -92,7 +104,7 @@ describe('Discord processing feedback', () => {
     await feedback('discord:123:456', progress);
     await expect(feedback('discord:123:456', progress)).rejects.toThrow('Fixture edit failure');
     await feedback('discord:123:456', progress);
-    expect(calls.at(-1)?.body).toEqual({ markdown: '🖥️ terminal\n```\nsame command\n```\n(×2)' });
+    expect(calls.at(-1)?.body).toEqual({ markdown: '-# 🖥️ terminal · `same command` (×2)' });
   });
 
   it('bounds abandoned preview retention while preserving new tool activity', async () => {
