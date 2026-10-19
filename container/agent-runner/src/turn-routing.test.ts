@@ -259,3 +259,71 @@ describe('turn routing — a query error after later turns', () => {
     ]);
   });
 });
+
+it('processes queued proactive webhooks while idle and sends the answer to the owner DM', async () => {
+  getInboundDb().exec(
+    "INSERT INTO destinations (name,display_name,type,channel_type,platform_id) VALUES ('owner-dm','Owner','channel','discord','discord:@me:987')",
+  );
+  getInboundDb()
+    .prepare(
+      `INSERT INTO messages_in (id,kind,timestamp,status,trigger,platform_id,channel_type,thread_id,content)
+    VALUES ('proactive-review-proof','webhook',?,'pending',1,'discord:@me:987','discord',NULL,?)`,
+    )
+    .run(
+      new Date().toISOString(),
+      JSON.stringify({
+        source: 'proactivity',
+        event: 'session_review',
+        text: 'Verify the unfinished build against the authorized request.',
+        proactiveReview: 'review-proof',
+        delivery: 'queue',
+      }),
+    );
+  const controller = new AbortController();
+  let received = '';
+  const provider: import('./providers/types.js').AgentProvider = {
+    registerMemorySessionHook() {},
+    isSessionInvalid() {
+      return false;
+    },
+    onExchangeComplete() {
+      controller.abort();
+    },
+    query(input) {
+      received = input.prompt;
+      return {
+        events: (async function* (): AsyncGenerator<ProviderEvent> {
+          const text = '<message to="owner-dm">Verified update</message>';
+          yield { type: 'text', text };
+          yield { type: 'result', text };
+        })(),
+        push() {},
+        end() {},
+        abort() {},
+      };
+    },
+  };
+  const timer = setTimeout(() => controller.abort(), 2000);
+  try {
+    await runPollLoop({
+      provider,
+      providerContract: CONTRACT,
+      providerName: 'fixture',
+      cwd: '/tmp',
+      signal: controller.signal,
+    });
+    expect(received).toContain('source="proactivity"');
+    expect(received).toContain('Verify the unfinished build');
+    const replies = getUndeliveredMessages().filter((row) => row.kind === 'chat');
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({
+      in_reply_to: 'proactive-review-proof',
+      platform_id: 'discord:@me:987',
+      channel_type: 'discord',
+      thread_id: null,
+    });
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
+});

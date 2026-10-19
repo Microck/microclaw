@@ -22,7 +22,7 @@ host. It does nothing without private `data/proactivity.json` configuration.
   minutes to one day. A non-null delay schedules review only; it never wakes the main agent immediately. When that timer expires, an authorized status check can wake the agent. Completed work and questions awaiting the user should
   receive no scheduled review. At most three timer reviews run per new request.
 - In `active` mode, an evidenced investigation can queue a continuation through
-  the original session's inbound mailbox. It uses that session's existing model,
+  the original session's inbound mailbox as a triggered `webhook` event. `system` messages are reserved for MCP responses and cannot wake an idle runner. Automatic review events retain the original request identity and wake limits. It uses that session's existing model,
   context, tools and permissions. When `notificationUserId` is configured, automated follow-up replies go to that owner's DM; normal user-requested replies retain their thread route. Each notifying personality receives an outbound DM destination and refreshed session projections; inbound DMs stay wired to the primary assistant. It cannot grant permission or execute
   the reviewer's instructions as trusted instructions. The main agent verifies
   the finding against the user's request. Unsupported or already resolved

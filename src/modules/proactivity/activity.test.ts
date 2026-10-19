@@ -138,12 +138,14 @@ test('retains the exact thread and survives the insertion/ledger crash window', 
   expect((await insertContinuation(f.mailbox, session, event, watch, decision, false, later)).state).toBe('admitted');
   expect((await insertContinuation(f.mailbox, session, event, watch, decision, false, later)).state).toBe('admitted');
   const rows = f.inbound
-    .prepare("SELECT platform_id,thread_id,content FROM messages_in WHERE kind='system'")
+    .prepare("SELECT platform_id,thread_id,content FROM messages_in WHERE kind='webhook'")
     .all() as Array<{ platform_id: string; thread_id: string; content: string }>;
   expect(rows).toHaveLength(1);
   expect(rows[0].thread_id).toBe(session.thread_id);
   expect(rows[0].platform_id).toBe('discord:123:456');
   expect(rows[0].content).toContain('untrusted report');
+  expect(rows[0].content).toContain('session_review');
+  expect(f.snapshot().origin?.id).toBe('user-a');
 });
 test('stop cancels queued continuations and persists until a new user request', async () => {
   const f = await fixture();
@@ -185,7 +187,7 @@ test.each(['busy', 'waiting_for_user', 'closed', 'superseded', 'wake_limit', 'du
       (await insertContinuation(f.mailbox, target, event, watch, decision, condition === 'waiting_for_user', later))
         .state,
     ).toBe(condition);
-    expect(f.inbound.prepare("SELECT count(*) AS count FROM messages_in WHERE kind='system'").get()).toEqual({
+    expect(f.inbound.prepare("SELECT count(*) AS count FROM messages_in WHERE kind='webhook'").get()).toEqual({
       count: 0,
     });
   },
@@ -221,7 +223,7 @@ test('routes automatic follow-ups to the configured DM without changing the sess
   expect((await insertContinuation(f.mailbox, session, event, watch, decision, false, later, destination)).state).toBe(
     'admitted',
   );
-  const row = f.inbound.prepare("SELECT platform_id,thread_id FROM messages_in WHERE kind='system'").get();
+  const row = f.inbound.prepare("SELECT platform_id,thread_id FROM messages_in WHERE kind='webhook'").get();
   expect(row).toEqual({ platform_id: 'discord:@me:987', thread_id: null });
   expect(session.thread_id).not.toBeNull();
 });
@@ -248,7 +250,7 @@ test('mail alerts require verification in DM and remain idempotent', async () =>
   expect(await insertMailReview(f.mailbox, event, destination, later)).toBe('admitted');
   expect(await insertMailReview(f.mailbox, event, destination, later)).toBe('admitted');
   const rows = f.inbound
-    .prepare("SELECT platform_id,thread_id,content FROM messages_in WHERE kind='system'")
+    .prepare("SELECT platform_id,thread_id,content FROM messages_in WHERE kind='webhook'")
     .all() as Array<{ platform_id: string; thread_id: string | null; content: string }>;
   expect(rows).toHaveLength(1);
   expect(rows[0].platform_id).toBe(destination.platformId);

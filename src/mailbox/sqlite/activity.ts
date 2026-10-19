@@ -16,12 +16,14 @@ export function readActivitySnapshot(
     'text',substr(coalesce(json_extract(content,'$.text'),json_extract(content,'$.content'),''),1,6000),
     'proactiveReview',json_extract(content,'$.proactiveReview'),
     'proactiveStop',json_extract(content,'$.proactiveStop')) ELSE substr(content,1,6000) END`;
+  // Automated reviews extend the user request; they must not reset its wake limits.
   const origin = inbound
     .prepare(
       `SELECT id,seq AS sequence,timestamp,kind,${inputContent} AS content,
     platform_id AS platformId,channel_type AS channelType,thread_id AS threadId FROM messages_in
     WHERE trigger=1 AND kind IN ('chat','chat-sdk','webhook','task')
       AND (channel_type IS NULL OR channel_type NOT IN ('session-echo','agent'))
+      AND (NOT json_valid(content) OR json_extract(content,'$.proactiveReview') IS NULL)
     ORDER BY seq DESC LIMIT 1`,
     )
     .get() as ActivityInput | undefined;
