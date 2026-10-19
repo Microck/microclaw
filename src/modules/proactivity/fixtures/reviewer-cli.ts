@@ -22,8 +22,10 @@ process.stdin.on('end', () => {
     setInterval(() => {}, 1000);
     return;
   }
-  if (input === 'TOOL') {
-    console.log(JSON.stringify({ type: 'item.started', item: { type: 'command_execution' } }));
+  if (input === 'TOOL' || input === 'MODEL_ERROR') {
+    console.log(
+      JSON.stringify({ type: 'item.started', item: { type: input === 'TOOL' ? 'command_execution' : 'error' } }),
+    );
     setInterval(() => {}, 1000);
     return;
   }

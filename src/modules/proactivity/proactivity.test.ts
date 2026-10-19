@@ -169,6 +169,10 @@ test('rejects tool attempts instead of accepting a final decision', async () => 
   await expect(runFixture('TOOL')).rejects.toMatchObject({ category: 'tool_attempt' });
 });
 
+test('classifies provider error items as infrastructure failures', async () => {
+  await expect(runFixture('MODEL_ERROR')).rejects.toMatchObject({ category: 'model_failed' });
+});
+
 test('bounds process output even without a line ending', async () => {
   await expect(runFixture('OVERFLOW')).rejects.toMatchObject({ category: 'output_limit' });
 });
