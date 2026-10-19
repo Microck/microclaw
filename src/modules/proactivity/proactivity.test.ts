@@ -169,8 +169,12 @@ test('rejects tool attempts instead of accepting a final decision', async () => 
   await expect(runFixture('TOOL')).rejects.toMatchObject({ category: 'tool_attempt' });
 });
 
-test('classifies provider error items as infrastructure failures', async () => {
+test('classifies failed turns as infrastructure failures', async () => {
   await expect(runFixture('MODEL_ERROR')).rejects.toMatchObject({ category: 'model_failed' });
+});
+
+test('continues through nonfatal provider warnings and model rerouting', async () => {
+  expect((await runFixture('WARNING')).decision.action).toBe('investigate');
 });
 
 test('bounds process output even without a line ending', async () => {

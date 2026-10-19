@@ -241,12 +241,9 @@ export async function reviewEvent(options: {
           usage?: { input_tokens: number; output_tokens: number };
           item?: { type: string };
         };
-        if (event.item?.type === 'error') {
-          terminate('model_failed');
-          return;
-        }
-        // Reject even attempted tools. No unsafe result can be marked successful.
-        if (event.item && !['agent_message', 'reasoning'].includes(event.item.type)) {
+        // Codex error items are nonfatal warnings, including model rerouting.
+        // Reject actual tool attempts; fatal errors use the top-level event below.
+        if (event.item && !['agent_message', 'reasoning', 'error'].includes(event.item.type)) {
           console.warn('[proactive-review] Rejected non-text item', String(event.item.type).slice(0, 80));
           terminate('tool_attempt');
         }

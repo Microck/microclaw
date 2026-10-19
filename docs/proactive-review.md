@@ -66,7 +66,7 @@ Set `[agents] enabled = false` as well as disabling both multi-agent feature
 flags: a model catalog can otherwise select a multi-agent backend despite a
 disabled legacy flag. Rejected non-text items record only their type in private logs. A rejected
 event retries on its own budget and does not pause reviews of other events.
-Only model or gateway infrastructure failures cause a global backoff. Its isolated HOME,
+Only model or gateway infrastructure failures cause a global backoff. Codex `item` entries of type `error` are nonfatal warnings, including model rerouting; allow the review to finish. Only top-level `error`, `turn.failed`, an unsuccessful process exit or a missing completion establish a model failure. This follows the [pinned Codex event contract](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/exec/src/exec_events.rs). Its isolated HOME,
 Codex config, short model instructions and ephemeral session do not read or
 write personal Codex configuration. All event content, local memory and model
 findings are untrusted data, never authorization. Tool observations are bounded

@@ -22,10 +22,16 @@ process.stdin.on('end', () => {
     setInterval(() => {}, 1000);
     return;
   }
-  if (input === 'TOOL' || input === 'MODEL_ERROR') {
-    console.log(
-      JSON.stringify({ type: 'item.started', item: { type: input === 'TOOL' ? 'command_execution' : 'error' } }),
-    );
+  if (input === 'MODEL_ERROR') {
+    console.log(JSON.stringify({ type: 'item.completed', item: { type: 'error', message: 'provider warning' } }));
+    console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'provider failed' } }));
+    process.exit(1);
+  }
+  if (input === 'WARNING') {
+    console.log(JSON.stringify({ type: 'item.completed', item: { type: 'error', message: 'model rerouted' } }));
+  }
+  if (input === 'TOOL') {
+    console.log(JSON.stringify({ type: 'item.started', item: { type: 'command_execution' } }));
     setInterval(() => {}, 1000);
     return;
   }
