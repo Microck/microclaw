@@ -246,12 +246,6 @@ export function wrapSqliteInbound(db: Database.Database, nextSequence = () => ne
         // Stop is durable even when no turn is running. A background reviewer
         // must not resurrect this conversation after a host restart.
         db.prepare(
-          `UPDATE messages_in SET status='cancelled' WHERE kind='system'
-          AND status IN ('pending','processing') AND json_valid(content)
-          AND json_extract(content,'$.proactiveReview') IS NOT NULL
-          AND julianday(timestamp)<=julianday(?)`,
-        ).run(before);
-        db.prepare(
           `INSERT OR IGNORE INTO messages_in
           (id,seq,kind,timestamp,status,trigger,content) VALUES (?,?,'system',?,'completed',0,?)`,
         ).run(`proactive-stop-${before}`, nextSequence(), before, JSON.stringify({ proactiveStop: true }));
